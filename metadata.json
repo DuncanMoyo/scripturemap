@@ -1,0 +1,6 @@
+{
+  "name": "Scripture Atlas",
+  "description": "An interactive Bible exploration and cross-reference knowledge graph platform for visual Scripture study.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

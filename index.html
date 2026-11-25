@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Scripture Atlas — Interactive Biblical Cross-Reference Graph</title>
+    <meta name="description" content="An interactive Bible exploration and cross-reference knowledge graph platform for visual Scripture study." />
+    <meta name="theme-color" content="#0D0E10" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Atlas" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:title" content="Scripture Atlas — Interactive Biblical Cross-Reference Graph" />
+    <meta property="og:description" content="Explore the interconnected network of Scripture through an interactive 2D & 3D canon knowledge graph, KJV/ASV/YLT reader, thematic study, and curated collections." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet" />
+  </head>
+  <body class="bg-[var(--atlas-bg)] text-[var(--atlas-text)] antialiased selection:bg-[var(--atlas-accent)]/30 selection:text-[var(--atlas-accent-soft)]">
+    <div id="root"></div>
+    <noscript>
+      <main style="max-width:640px;margin:2rem auto;padding:1.5rem;font-family:Georgia,serif;">
+        <h1>Scripture Atlas</h1>
+        <p>Interactive biblical cross-reference atlas, 66-book Bible reader, and biblical geography explorer. Please enable JavaScript to interact with the graph and reader.</p>
+      </main>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
