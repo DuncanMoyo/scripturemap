@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { BIBLICAL_EVENTS } from '../src/data/atlasModules';
-import { BIBLE_BOOKS } from '../src/data/books';
+import { BIBLE_BOOKS, BOOK_MAP } from '../src/data/books';
 import { CROSS_REFERENCES } from '../src/data/crossReferences';
+import { FUNDAMENTAL_BELIEF_SECTIONS } from '../src/data/fundamentalBeliefs';
 import { BIBLICAL_JOURNEYS, BIBLICAL_LOCATIONS } from '../src/data/geography';
 import { SANCTUARY_ARTICLES } from '../src/data/sanctuary';
 import { BIBLICAL_THEMES } from '../src/data/themes';
@@ -31,6 +32,7 @@ import {
   loadTskConnectionsForVerse,
   parseStrongsTaggedText,
   queryRelationshipDatabase,
+  resolveVerseAsync,
   searchFullCorpus,
   searchScripture,
 } from '../src/services/scriptureService';
@@ -475,6 +477,55 @@ describe("Strong's Interlinear, Lexicon, 66x66 Matrix, Full-Bible Path, Custom E
     expect(guideUrl).toBe('/guide');
     expect(parseUrlRoute('/guide', '').section).toBe('guide');
   });
+
+  it('validates all 25 Fundamental Beliefs study chapters and resolves every OSIS VerseId', async () => {
+    const chapters = FUNDAMENTAL_BELIEF_SECTIONS.filter((s) => s.kind === 'chapter');
+    expect(chapters).toHaveLength(25);
+    expect(FUNDAMENTAL_BELIEF_SECTIONS.some((s) => s.kind === 'preface')).toBe(true);
+    expect(FUNDAMENTAL_BELIEF_SECTIONS.some((s) => s.kind === 'conclusion')).toBe(true);
+
+    const themeIds = new Set(BIBLICAL_THEMES.map((t) => t.id));
+    const sanctuaryIds = new Set(SANCTUARY_ARTICLES.map((a) => a.id));
+    const eventIds = new Set(BIBLICAL_EVENTS.map((e) => e.id));
+
+    for (const sec of FUNDAMENTAL_BELIEF_SECTIONS) {
+      expect(sec.title.trim().length).toBeGreaterThan(0);
+      expect(sec.biblicalSummary.trim().length).toBeGreaterThan(20);
+      expect(sec.doctrinalNotes.trim().length).toBeGreaterThan(20);
+      expect(sec.keyVerseIds.length).toBeGreaterThan(0);
+      expect(sec.studyQuestions.length).toBeGreaterThan(0);
+
+      if (sec.relatedThemeId) {
+        expect(themeIds.has(sec.relatedThemeId), `Unknown theme ${sec.relatedThemeId}`).toBe(true);
+      }
+      if (sec.relatedSanctuaryId) {
+        expect(
+          sanctuaryIds.has(sec.relatedSanctuaryId),
+          `Unknown sanctuary ${sec.relatedSanctuaryId}`
+        ).toBe(true);
+      }
+      if (sec.relatedEventId) {
+        expect(eventIds.has(sec.relatedEventId), `Unknown event ${sec.relatedEventId}`).toBe(true);
+      }
+
+      const allIds = Array.from(
+        new Set([...sec.keyVerseIds, ...sec.subsections.flatMap((s) => s.verseIds)])
+      );
+      for (const vId of allIds) {
+        const [bookId, chRaw, vsRaw] = vId.split('.');
+        const book = BOOK_MAP[bookId];
+        expect(book, `Invalid book ID ${vId} in ${sec.id}`).toBeDefined();
+        const ch = parseInt(chRaw, 10);
+        const vs = parseInt(vsRaw, 10);
+        expect(ch).toBeGreaterThanOrEqual(1);
+        expect(ch).toBeLessThanOrEqual(book.chapterCount);
+        expect(vs).toBeGreaterThanOrEqual(1);
+        const resolved = await resolveVerseAsync(vId);
+        expect(resolved, `Unresolved KJV verse ${vId} in ${sec.id}`).toBeDefined();
+      }
+    }
+  });
 });
+
 
 

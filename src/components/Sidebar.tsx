@@ -49,7 +49,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'geography', label: 'Biblical Geography', icon: Compass, group: 'atlas' },
   { id: 'sanctuary', label: 'Sanctuary Explorer', icon: Landmark, group: 'atlas' },
   { id: 'collections', label: 'Study Collections', icon: FolderKanban, group: 'personal' },
-  { id: 'guide', label: 'How to Use', icon: CircleHelp, group: 'personal' },
+  { id: 'guide', label: 'Study Guide', icon: CircleHelp, group: 'personal' },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({

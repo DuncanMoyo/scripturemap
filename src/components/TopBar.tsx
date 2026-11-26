@@ -44,7 +44,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   geography: 'Biblical Geography',
   sanctuary: 'Sanctuary Explorer',
   collections: 'Study Collections',
-  guide: 'How to Use Scripture Atlas',
+  guide: 'Study Guide & Field Manual',
 };
 
 export const TopBar: React.FC<TopBarProps> = ({

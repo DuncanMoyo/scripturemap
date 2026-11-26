@@ -5,7 +5,7 @@ import { CollectionsView } from './components/CollectionsView';
 import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { CreateCollectionModal } from './components/CreateCollectionModal';
 import { GeographyView } from './components/GeographyView';
-import { GuideView } from './components/GuideView';
+import { GuideView, GuideWorkspaceTab } from './components/GuideView';
 import { SanctuaryExplorerView } from './components/SanctuaryExplorerView';
 import { ScriptureGraphView } from './components/ScriptureGraphView';
 import { Sidebar } from './components/Sidebar';
@@ -167,6 +167,8 @@ export default function App() {
   const [activeSanctuaryId, setActiveSanctuaryId] = useState<string | undefined>(
     () => initialRoute.sanctuaryId
   );
+  const [guideTab, setGuideTab] = useState<GuideWorkspaceTab>('beliefs');
+  const [activeBeliefId, setActiveBeliefId] = useState<string | undefined>('ch-1');
 
   // Persistent study state
   const [studyState, setStudyState] = useState<UserStudyState>(() =>
@@ -1162,7 +1164,10 @@ export default function App() {
 
           {activeSection === 'guide' && (
             <GuideView
+              initialTab={guideTab}
+              initialBeliefId={activeBeliefId}
               onOpenInGraph={handleOpenInGraph}
+              onLoadVersesInGraph={handleLoadVersesInGraph}
               onOpenGraphMode={(mode, targetAnchor) => {
                 if (targetAnchor) {
                   setAnchorVerseId(targetAnchor);
@@ -1187,6 +1192,7 @@ export default function App() {
               onOpenJourney={handleOpenJourney}
               onOpenSanctuary={handleOpenSanctuary}
               onOpenCollections={() => setActiveSection('collections')}
+              onCreateCollection={handleCreateCollection}
               onOpenCommandPalette={() => setCommandPaletteOpen(true)}
             />
           )}
@@ -1214,6 +1220,11 @@ export default function App() {
         onOpenTheme={handleOpenTheme}
         onOpenLocation={handleOpenLocation}
         onOpenSanctuary={handleOpenSanctuary}
+        onOpenBeliefGuide={(tab, beliefId) => {
+          setGuideTab(tab);
+          if (beliefId) setActiveBeliefId(beliefId);
+          setActiveSection('guide');
+        }}
       />
     </div>
   );

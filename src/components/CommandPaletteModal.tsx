@@ -15,6 +15,7 @@ import {
   Sun,
   X,
 } from 'lucide-react';
+import { FUNDAMENTAL_BELIEF_SECTIONS } from '../data/fundamentalBeliefs';
 import { BIBLICAL_LOCATIONS } from '../data/geography';
 import { SANCTUARY_ARTICLES } from '../data/sanctuary';
 import { BIBLICAL_THEMES } from '../data/themes';
@@ -41,6 +42,7 @@ interface CommandPaletteModalProps {
   onOpenTheme: (themeId: string) => void;
   onOpenLocation: (locationId: string) => void;
   onOpenSanctuary: (sanctuaryId: string) => void;
+  onOpenBeliefGuide?: (tab: 'beliefs' | 'manual', beliefId?: string) => void;
 }
 
 interface PaletteItem {
@@ -67,6 +69,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onOpenTheme,
   onOpenLocation,
   onOpenSanctuary,
+  onOpenBeliefGuide,
 }) => {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -176,13 +179,34 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
         action: () => onSelectSection('collections'),
       },
       {
+        id: 'nav-beliefs-guide',
+        group: 'Views',
+        label: 'Study Guide · 25 Fundamental Christian Beliefs',
+        subtitle: 'Interactive doctrinal lessons, live KJV proofs, Graph clusters & PDF',
+        keywords: 'study guide beliefs fundamental doctrine pdf lessons',
+        icon: 'guide',
+        action: () => {
+          if (onOpenBeliefGuide) {
+            onOpenBeliefGuide('beliefs');
+          } else {
+            onSelectSection('guide');
+          }
+        },
+      },
+      {
         id: 'nav-guide',
         group: 'Views',
-        label: 'How to Use Scripture Atlas · Full Potential Guide',
+        label: 'App Field Manual · How to Use Scripture Atlas',
         subtitle: 'Workflows, Strong’s interlinear, TSK pathfinding, 3D views & shortcuts',
         keywords: 'guide help tutorial how to use workflows manual shortcuts',
         icon: 'guide',
-        action: () => onSelectSection('guide'),
+        action: () => {
+          if (onOpenBeliefGuide) {
+            onOpenBeliefGuide('manual');
+          } else {
+            onSelectSection('guide');
+          }
+        },
       },
       {
         id: 'act-theme',
@@ -237,6 +261,21 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
         icon: 'geo' as const,
         action: () => onOpenLocation(l.id),
       })),
+      ...FUNDAMENTAL_BELIEF_SECTIONS.map((b) => ({
+        id: `belief-${b.id}`,
+        group: 'Study Guide',
+        label: `${b.numeral}. ${b.title}`,
+        subtitle: `Fundamental Beliefs (${b.pageRange}) · ${b.category}`,
+        keywords: `study guide belief ${b.numeral.toLowerCase()} ${b.title.toLowerCase()} ${b.category.toLowerCase()}`,
+        icon: 'guide' as const,
+        action: () => {
+          if (onOpenBeliefGuide) {
+            onOpenBeliefGuide('beliefs', b.id);
+          } else {
+            onSelectSection('guide');
+          }
+        },
+      })),
     ];
     return items;
   }, [
@@ -249,6 +288,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
     onOpenTheme,
     onOpenLocation,
     onOpenSanctuary,
+    onOpenBeliefGuide,
   ]);
 
   const filteredItems = useMemo(() => {
