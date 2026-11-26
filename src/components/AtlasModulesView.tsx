@@ -7,6 +7,8 @@ import {
   Landmark,
   Layers,
   Route,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import { BIBLICAL_EVENTS } from '../data/atlasModules';
 import {
@@ -51,6 +53,7 @@ export const TimelineView: React.FC<AtlasModuleActions> = ({
     initialEventId ?? BIBLICAL_EVENTS[0].id
   );
   const [eraFilter, setEraFilter] = useState('All Eras');
+  const [timelineZoom, setTimelineZoom] = useState(120);
 
   useEffect(() => {
     if (initialEventId) {
@@ -120,57 +123,110 @@ export const TimelineView: React.FC<AtlasModuleActions> = ({
       {/* Main Chronological Span & Cross-Module Explorer */}
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         <div className="px-5 sm:px-10 py-3 bg-[var(--atlas-surface)]/80 border-b border-[var(--atlas-border)] space-y-2.5 shrink-0">
-          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-            {ERA_FILTERS.map((era) => {
-              const active = eraFilter === era;
-              return (
-                <button
-                  key={era}
-                  type="button"
-                  onClick={() => {
-                    setEraFilter(era);
-                    if (era !== 'All Eras') {
-                      const firstMatch = BIBLICAL_EVENTS.find(
-                        (e) => e.era === era || e.era.includes(era)
-                      );
-                      if (firstMatch) setSelectedId(firstMatch.id);
-                    }
-                  }}
-                  className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
-                    active
-                      ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)] border border-[var(--atlas-accent)]/40'
-                      : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] border border-transparent hover:bg-[var(--atlas-elevated)]/50'
-                  }`}
-                >
-                  {era}
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="flex items-center gap-1.5 overflow-x-auto">
-            {BIBLICAL_EVENTS.map((evt, idx) => {
-              const isSelected = evt.id === selected.id;
-              return (
-                <React.Fragment key={`bar-${evt.id}`}>
-                  {idx > 0 && (
-                    <span className="w-3 h-px bg-[var(--atlas-border-strong)] shrink-0" />
-                  )}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              {ERA_FILTERS.map((era) => {
+                const active = eraFilter === era;
+                return (
                   <button
+                    key={era}
                     type="button"
-                    onClick={() => setSelectedId(evt.id)}
-                    title={`${evt.title} (${evt.approximateDate})`}
-                    className={`px-2 py-1 rounded font-mono text-[11px] tabular-nums transition-colors whitespace-nowrap shrink-0 border ${
-                      isSelected
-                        ? 'bg-[var(--atlas-accent)] text-[var(--atlas-accent-contrast)] border-[var(--atlas-accent)] font-semibold'
-                        : 'bg-[var(--atlas-bg)] text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] border-[var(--atlas-border)]'
+                    onClick={() => {
+                      setEraFilter(era);
+                      if (era !== 'All Eras') {
+                        const firstMatch = BIBLICAL_EVENTS.find(
+                          (e) => e.era === era || e.era.includes(era)
+                        );
+                        if (firstMatch) setSelectedId(firstMatch.id);
+                      }
+                    }}
+                    className={`px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      active
+                        ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)] border border-[var(--atlas-accent)]/40'
+                        : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] border border-transparent hover:bg-[var(--atlas-elevated)]/50'
                     }`}
                   >
-                    {String(evt.sortOrder).padStart(2, '0')} · {evt.approximateDate}
+                    {era}
                   </button>
-                </React.Fragment>
-              );
-            })}
+                );
+              })}
+            </div>
+
+            <div className="hidden sm:flex items-center gap-1.5 shrink-0 text-[11px] font-mono text-[var(--atlas-text-muted)]">
+              <button
+                type="button"
+                onClick={() => setTimelineZoom((z) => Math.max(90, z - 25))}
+                aria-label="Zoom out timeline"
+                className="p-1 rounded hover:bg-[var(--atlas-elevated)]"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <span className="tabular-nums w-10 text-center">{timelineZoom}%</span>
+              <button
+                type="button"
+                onClick={() => setTimelineZoom((z) => Math.min(240, z + 25))}
+                aria-label="Zoom in timeline"
+                className="p-1 rounded hover:bg-[var(--atlas-elevated)]"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Zoomable Horizontal Chronological Swimlane Track */}
+          <div className="overflow-x-auto pb-1">
+            <div
+              className="relative flex flex-col gap-1.5 py-2 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border)]"
+              style={{ minWidth: `${Math.max(760, BIBLICAL_EVENTS.length * (timelineZoom * 0.92))}px` }}
+            >
+              {/* Swimlane 1: Redemptive Covenants & Milestones */}
+              <div className="flex items-center justify-between gap-2 relative">
+                <div
+                  className="absolute left-3 right-3 top-1/2 h-px bg-[var(--atlas-border-strong)] pointer-events-none"
+                  aria-hidden="true"
+                />
+                {BIBLICAL_EVENTS.map((evt) => {
+                  const isSelected = evt.id === selected.id;
+                  return (
+                    <button
+                      key={`bar-${evt.id}`}
+                      type="button"
+                      onClick={() => setSelectedId(evt.id)}
+                      title={`${evt.title} (${evt.approximateDate})`}
+                      className={`relative z-10 flex-1 min-w-[96px] px-2 py-1.5 rounded text-left transition-colors border ${
+                        isSelected
+                          ? 'bg-[var(--atlas-accent)] text-[var(--atlas-accent-contrast)] border-[var(--atlas-accent)] font-semibold shadow-sm'
+                          : 'bg-[var(--atlas-surface)] text-[var(--atlas-text-secondary)] hover:border-[var(--atlas-accent)]/40 border-[var(--atlas-border)]'
+                      }`}
+                    >
+                      <div className="font-mono text-[10px] tabular-nums opacity-85 truncate">
+                        {evt.approximateDate}
+                      </div>
+                      <div className="text-[11px] truncate">{evt.title}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Swimlane 2: Concurrent Empires & Scriptural Witnesses */}
+              <div className="grid grid-cols-5 gap-2 text-[10px] font-mono">
+                <div className="px-2 py-1 rounded bg-[var(--atlas-surface)]/80 border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] truncate">
+                  Ancient Near East · Egypt · Genesis–Deut
+                </div>
+                <div className="px-2 py-1 rounded bg-[var(--atlas-surface)]/80 border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] truncate">
+                  United/Divided Monarchy · Assyria · Psalms &amp; Prophets
+                </div>
+                <div className="px-2 py-1 rounded bg-[var(--atlas-surface)]/80 border border-[var(--atlas-border)] text-[var(--atlas-text-muted)] truncate">
+                  Babylon &amp; Persia · Daniel / Ezra–Neh / Zechariah
+                </div>
+                <div className="px-2 py-1 rounded bg-[var(--atlas-surface)]/80 border border-[var(--atlas-secondary)]/30 text-[var(--atlas-secondary)] truncate">
+                  Second Temple Judea · Roman Empire · Gospels &amp; Acts
+                </div>
+                <div className="px-2 py-1 rounded bg-[var(--atlas-surface)]/80 border border-[var(--atlas-accent)]/30 text-[var(--atlas-accent-soft)] truncate">
+                  Mediterranean Churches · Epistles &amp; Revelation
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 

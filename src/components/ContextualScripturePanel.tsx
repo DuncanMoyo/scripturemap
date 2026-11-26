@@ -10,11 +10,14 @@ import {
   GitBranchPlus,
   History,
   Landmark,
+  Languages,
   Layers,
+  Link2,
   MinusCircle,
   PanelRightClose,
   Route,
   Search,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -32,6 +35,7 @@ import {
   getSanctuaryForVerse,
   getThemesForVerse,
   getVerseById,
+  getVerseStrongsTokensAsync,
   loadTskConnectionsForVerse,
   resolveVerseAsync,
   ScripturePathResult,
@@ -39,12 +43,14 @@ import {
 import {
   HighlightColor,
   RelationshipType,
+  StrongsWordToken,
   StudyCollection,
   TskCrossReference,
   UserStudyState,
   Verse,
   VerseId,
 } from '../types/scripture';
+import { StrongsWordInspector } from './StrongsWordInspector';
 
 interface ContextualScripturePanelProps {
   verseId: VerseId;
@@ -76,6 +82,14 @@ interface ContextualScripturePanelProps {
   onSaveNote: (verseId: VerseId, note: string) => void;
   onToggleVerseInCollection: (collectionId: string, verseId: VerseId) => void;
   onCreateCollectionForVerse: (verseId: VerseId) => void;
+  onOpenCreateCustomEdge?: (sourceVerseId: VerseId) => void;
+  onDeleteCustomEdge?: (edgeId: string) => void;
+  onMapLexicalParallels?: (
+    strongsId: string,
+    lemma: string,
+    originVerseId: VerseId,
+    matchingVerses: VerseId[]
+  ) => void;
   onClosePanel?: () => void;
 }
 
@@ -123,6 +137,9 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
   onSaveNote,
   onToggleVerseInCollection,
   onCreateCollectionForVerse,
+  onOpenCreateCustomEdge,
+  onDeleteCustomEdge,
+  onMapLexicalParallels,
   onClosePanel,
 }) => {
   const [resolvedVerse, setResolvedVerse] = useState<Verse | undefined>(() =>
@@ -135,6 +152,12 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
   const [tskLinks, setTskLinks] = useState<TskCrossReference[]>([]);
   const [tskLoading, setTskLoading] = useState(false);
   const [tskExpanded, setTskExpanded] = useState(true);
+  const [strongsTokens, setStrongsTokens] = useState<StrongsWordToken[]>([]);
+  const [lexiconExpanded, setLexiconExpanded] = useState(false);
+  const [activeStrongsChip, setActiveStrongsChip] = useState<{
+    id: string;
+    word: string;
+  } | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -169,6 +192,20 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
   }, [verseId]);
 
   useEffect(() => {
+    let active = true;
+    void getVerseStrongsTokensAsync(verseId)
+      .then((toks) => {
+        if (active) setStrongsTokens(toks);
+      })
+      .catch(() => {
+        if (active) setStrongsTokens([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [verseId]);
+
+  useEffect(() => {
     setNoteDraft(studyState.notes[verseId] ?? '');
     setCollectionMenuOpen(false);
   }, [verseId, studyState.notes]);
@@ -176,9 +213,30 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
   const verse = resolvedVerse ?? getVerseById(verseId);
 
   const allConnections = useMemo(
-    () => (verse ? getConnectedPassages(verse.id) : []),
-    [verse]
+    () =>
+      verse
+        ? getConnectedPassages(
+            verse.id,
+            undefined,
+            'all',
+            studyState.customEdges ?? []
+          )
+        : [],
+    [verse, studyState.customEdges]
   );
+
+  const uniqueStrongsChips = useMemo(() => {
+    const seen = new Set<string>();
+    const chips: { id: string; word: string }[] = [];
+    for (const tok of strongsTokens) {
+      for (const sid of tok.strongsIds) {
+        if (seen.has(sid)) continue;
+        seen.add(sid);
+        chips.push({ id: sid, word: tok.text.replace(/[.,;:!?()"']/g, '') });
+      }
+    }
+    return chips;
+  }, [strongsTokens]);
 
   const filteredByRel = useMemo(
     () =>
@@ -410,6 +468,17 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
             >
               <Route className="w-3.5 h-3.5" />
               <span>{isPathSource ? 'Path Origin Set' : 'Set Path Origin'}</span>
+            </button>
+          )}
+
+          {onOpenCreateCustomEdge && (
+            <button
+              type="button"
+              onClick={() => onOpenCreateCustomEdge(verse.id)}
+              className="col-span-2 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-[var(--atlas-bg)] hover:bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)] border border-[var(--atlas-accent)]/35 transition-colors whitespace-nowrap"
+            >
+              <Link2 className="w-3.5 h-3.5 text-[var(--atlas-accent)]" />
+              <span>Link Custom Connection from {verse.shortRef}</span>
             </button>
           )}
         </div>
@@ -791,12 +860,36 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
                       </p>
 
                       <div className="mt-2 pt-1.5 border-t border-[var(--atlas-border)] text-[10.5px] text-[var(--atlas-text-subtle)] space-y-0.5">
-                        <div>
-                          <span style={{ color: epMeta.color }}>{epMeta.shortLabel}</span>
-                          {' · '}
-                          <span className="text-[var(--atlas-text-muted)]">{edMeta.label}</span>
-                          {' · '}
-                          <span>{confMeta.label}</span>
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <span style={{ color: epMeta.color }}>{epMeta.shortLabel}</span>
+                            {' · '}
+                            <span className="text-[var(--atlas-text-muted)]">
+                              {edge.id.startsWith('custom-') ? 'Personal Edge' : edMeta.label}
+                            </span>
+                            {' · '}
+                            <span>{confMeta.label}</span>
+                          </div>
+                          {edge.id.startsWith('custom-') && onDeleteCustomEdge && (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteCustomEdge(edge.id);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.stopPropagation();
+                                  onDeleteCustomEdge(edge.id);
+                                }
+                              }}
+                              title="Delete custom edge"
+                              className="p-0.5 text-[#E57399] hover:opacity-80"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </span>
+                          )}
                         </div>
                         <div className="truncate" title={edge.sourceAttribution}>
                           Source: {edge.sourceAttribution}
@@ -811,6 +904,49 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
                   </div>
                 );
               })}
+            </div>
+          )}
+        </div>
+
+        {/* Original Language Lexicon (Strong's Hebrew & Greek) */}
+        <div className="pt-2 border-t border-[var(--atlas-border)] space-y-2">
+          <button
+            type="button"
+            onClick={() => setLexiconExpanded((v) => !v)}
+            className="w-full flex items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-1.5">
+              <Languages className="w-3.5 h-3.5 text-[var(--atlas-accent)]" />
+              <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--atlas-text-subtle)]">
+                Original Lexicon (Strong&apos;s)
+              </span>
+            </div>
+            <span className="text-[11px] font-mono tabular-nums text-[var(--atlas-text-subtle)]">
+              {uniqueStrongsChips.length} terms
+            </span>
+          </button>
+
+          {lexiconExpanded && (
+            <div className="flex flex-wrap gap-1.5">
+              {uniqueStrongsChips.length === 0 ? (
+                <p className="text-xs text-[var(--atlas-text-subtle)]">
+                  No Strong&apos;s lexical tokens indexed for this verse.
+                </p>
+              ) : (
+                uniqueStrongsChips.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setActiveStrongsChip(chip)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[var(--atlas-bg)] hover:bg-[var(--atlas-elevated)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text-secondary)] hover:text-[var(--atlas-accent-soft)] transition-colors"
+                  >
+                    <span>{chip.word}</span>
+                    <span className="font-mono text-[10px] text-[var(--atlas-accent)]">
+                      {chip.id}
+                    </span>
+                  </button>
+                ))
+              )}
             </div>
           )}
         </div>
@@ -918,6 +1054,17 @@ export const ContextualScripturePanel: React.FC<ContextualScripturePanelProps> =
           />
         </div>
       </div>
+
+      {activeStrongsChip && (
+        <StrongsWordInspector
+          strongsId={activeStrongsChip.id}
+          clickedWord={activeStrongsChip.word}
+          sourceVerseId={verse.id}
+          onClose={() => setActiveStrongsChip(null)}
+          onOpenInReader={onOpenInReader}
+          onMapLexicalParallels={onMapLexicalParallels}
+        />
+      )}
     </div>
   );
 };

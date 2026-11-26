@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   BookOpen,
+  Box,
   ChevronLeft,
   ChevronRight,
   Compass,
@@ -8,6 +9,7 @@ import {
   GitFork,
   Hammer,
   Landmark,
+  Layers,
   Maximize2,
   Route,
   ScrollText,
@@ -24,6 +26,7 @@ import {
   SanctuaryCompartment,
   VerseId,
 } from '../types/scripture';
+import { Sanctuary3D } from './Sanctuary3D';
 
 interface SanctuaryExplorerViewProps {
   atlasTheme?: AtlasTheme;
@@ -113,6 +116,7 @@ export const SanctuaryExplorerView: React.FC<SanctuaryExplorerViewProps> = ({
   const [showDimensions, setShowDimensions] = useState<boolean>(true);
   const [showPriestlyPath, setShowPriestlyPath] = useState<boolean>(true);
   const [studyLens, setStudyLens] = useState<StudyLens>('all');
+  const [viewMode, setViewMode] = useState<'plan2d' | 'model3d'>('plan2d');
   const [inspectorOpen, setInspectorOpen] = useState<boolean>(true);
 
   const svgColors = useMemo(() => getSanctuarySvgPalette(atlasTheme), [atlasTheme]);
@@ -239,64 +243,97 @@ export const SanctuaryExplorerView: React.FC<SanctuaryExplorerViewProps> = ({
 
       {/* Center Illustrated Architectural Floor Plan */}
       <div className="relative flex-1 min-h-[340px] flex flex-col bg-[var(--atlas-bg)] overflow-hidden">
-        {/* Top Floor Plan Controls */}
+        {/* Top Floor Plan / 3D Controls */}
         <div className="px-4 py-2.5 border-b border-[var(--atlas-border)] bg-[var(--atlas-surface)]/80 flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="inline-flex items-center p-0.5 rounded-md bg-[var(--atlas-bg)] border border-[var(--atlas-border)]">
+            <div className="inline-flex items-center p-0.5 rounded-md bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)]">
               <button
                 type="button"
-                onClick={() => setPlanZoom('precinct')}
+                onClick={() => setViewMode('plan2d')}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
-                  planZoom === 'precinct'
+                  viewMode === 'plan2d'
                     ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)]'
                     : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
                 }`}
               >
-                <Maximize2 className="w-3 h-3" />
-                <span>Full Precinct (100×50)</span>
+                <Layers className="w-3 h-3" />
+                <span>2D Architectural Plan</span>
               </button>
               <button
                 type="button"
-                onClick={() => setPlanZoom('tabernacle')}
+                onClick={() => setViewMode('model3d')}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
-                  planZoom === 'tabernacle'
+                  viewMode === 'model3d'
                     ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-secondary-soft)]'
                     : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
                 }`}
               >
-                <Eye className="w-3 h-3" />
-                <span>Tabernacle Interior</span>
+                <Box className="w-3 h-3 text-[var(--atlas-secondary)]" />
+                <span>3D Scale Model</span>
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowDimensions((v) => !v)}
-              className={`h-7 px-2.5 rounded border text-[11px] font-medium transition-colors whitespace-nowrap ${
-                showDimensions
-                  ? 'bg-[var(--atlas-accent)]/15 text-[var(--atlas-accent-soft)] border-[var(--atlas-accent)]/40'
-                  : 'bg-[var(--atlas-bg)] text-[var(--atlas-text-muted)] border-[var(--atlas-border)]'
-              }`}
-            >
-              Cubit Dimensions
-            </button>
+            {viewMode === 'plan2d' && (
+              <>
+                <div className="inline-flex items-center p-0.5 rounded-md bg-[var(--atlas-bg)] border border-[var(--atlas-border)]">
+                  <button
+                    type="button"
+                    onClick={() => setPlanZoom('precinct')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
+                      planZoom === 'precinct'
+                        ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)]'
+                        : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+                    }`}
+                  >
+                    <Maximize2 className="w-3 h-3" />
+                    <span>Full Precinct (100×50)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPlanZoom('tabernacle')}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
+                      planZoom === 'tabernacle'
+                        ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-secondary-soft)]'
+                        : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+                    }`}
+                  >
+                    <Eye className="w-3 h-3" />
+                    <span>Tabernacle Interior</span>
+                  </button>
+                </div>
 
-            <button
-              type="button"
-              onClick={() => setShowPriestlyPath((v) => !v)}
-              className={`h-7 px-2.5 rounded border text-[11px] font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
-                showPriestlyPath
-                  ? 'bg-[var(--atlas-secondary)]/15 text-[var(--atlas-secondary-soft)] border-[var(--atlas-secondary)]/40'
-                  : 'bg-[var(--atlas-bg)] text-[var(--atlas-text-muted)] border-[var(--atlas-border)]'
-              }`}
-            >
-              <Route className="w-3 h-3" />
-              <span>Ritual Path</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDimensions((v) => !v)}
+                  className={`h-7 px-2.5 rounded border text-[11px] font-medium transition-colors whitespace-nowrap ${
+                    showDimensions
+                      ? 'bg-[var(--atlas-accent)]/15 text-[var(--atlas-accent-soft)] border-[var(--atlas-accent)]/40'
+                      : 'bg-[var(--atlas-bg)] text-[var(--atlas-text-muted)] border-[var(--atlas-border)]'
+                  }`}
+                >
+                  Cubit Dimensions
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setShowPriestlyPath((v) => !v)}
+                  className={`h-7 px-2.5 rounded border text-[11px] font-medium inline-flex items-center gap-1 transition-colors whitespace-nowrap ${
+                    showPriestlyPath
+                      ? 'bg-[var(--atlas-secondary)]/15 text-[var(--atlas-secondary-soft)] border-[var(--atlas-secondary)]/40'
+                      : 'bg-[var(--atlas-bg)] text-[var(--atlas-text-muted)] border-[var(--atlas-border)]'
+                  }`}
+                >
+                  <Route className="w-3 h-3" />
+                  <span>Ritual Path</span>
+                </button>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-3 text-[11px] font-mono text-[var(--atlas-text-muted)]">
-            <span className="hidden sm:inline">Exodus 25–30 · Architectural Plan</span>
+            <span className="hidden sm:inline">
+              Exodus 25–30 · {viewMode === 'model3d' ? '3D Scale Model' : 'Architectural Plan'}
+            </span>
             {!inspectorOpen && (
               <button
                 type="button"
@@ -309,7 +346,14 @@ export const SanctuaryExplorerView: React.FC<SanctuaryExplorerViewProps> = ({
           </div>
         </div>
 
-        {/* SVG Architectural Blueprint Stage */}
+        {/* Interactive Stage: 2D SVG Plan or 3D Scale Model */}
+        {viewMode === 'model3d' ? (
+          <Sanctuary3D
+            atlasTheme={atlasTheme}
+            selectedId={selected.id}
+            onSelectComponent={(id) => selectComponent(id)}
+          />
+        ) : (
         <div className="relative flex-1 flex items-center justify-center p-3 sm:p-5 overflow-hidden">
           <svg
             viewBox={viewBox}
@@ -1023,6 +1067,7 @@ export const SanctuaryExplorerView: React.FC<SanctuaryExplorerViewProps> = ({
             </button>
           </div>
         </div>
+        )}
       </div>
 
       {/* Right Component Inspector */}

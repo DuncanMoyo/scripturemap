@@ -1,0 +1,241 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny all unspecified paths by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable hardened primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUserPrivateProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'createdAt', 'updatedAt'])
+        && data.uid is string
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.uid.size() >= 1
+        && data.uid.size() <= 128
+        && isValidId(data.uid)
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 254
+        && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120))
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 512))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserStudyDocument(data, userId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'preferredTranslation',
+          'bookmarks',
+          'readChapters',
+          'collections',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'preferredTranslation',
+          'bookmarks',
+          'readChapters',
+          'recentSearches',
+          'highlights',
+          'notes',
+          'collections',
+          'savedGraphs',
+          'customEdges',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.ownerId is string
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && isValidId(data.ownerId)
+        && data.preferredTranslation is string
+        && data.preferredTranslation in ['KJV', 'ASV', 'YLT']
+        && data.bookmarks is list
+        && data.bookmarks.size() <= 500
+        && (data.bookmarks.size() == 0 || (data.bookmarks[0] is string && data.bookmarks[0].size() <= 32))
+        && data.readChapters is list
+        && data.readChapters.size() <= 1189
+        && (data.readChapters.size() == 0 || (data.readChapters[0] is string && data.readChapters[0].size() <= 16))
+        && data.collections is list
+        && data.collections.size() <= 50
+        && (data.collections.size() == 0 || data.collections[0] is map)
+        && (!('recentSearches' in data) || (
+          data.recentSearches is list
+          && data.recentSearches.size() <= 12
+          && (data.recentSearches.size() == 0 || (data.recentSearches[0] is string && data.recentSearches[0].size() <= 120))
+        ))
+        && (!('highlights' in data) || (data.highlights is map && data.highlights.size() <= 1000))
+        && (!('notes' in data) || (data.notes is map && data.notes.size() <= 1000))
+        && (!('savedGraphs' in data) || (
+          data.savedGraphs is list
+          && data.savedGraphs.size() <= 24
+          && (data.savedGraphs.size() == 0 || data.savedGraphs[0] is map)
+        ))
+        && (!('customEdges' in data) || (
+          data.customEdges is list
+          && data.customEdges.size() <= 250
+          && (data.customEdges.size() == 0 || data.customEdges[0] is map)
+        ))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSharedCollection(data, shareId) {
+      return data.keys().hasAll([
+          'shareId',
+          'ownerId',
+          'authorLabel',
+          'title',
+          'description',
+          'verseIds',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'shareId',
+          'ownerId',
+          'authorLabel',
+          'title',
+          'description',
+          'verseIds',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.shareId is string
+        && data.shareId == shareId
+        && data.shareId.size() >= 4
+        && data.shareId.size() <= 64
+        && isValidId(data.shareId)
+        && data.ownerId is string
+        && data.ownerId == request.auth.uid
+        && data.ownerId.size() >= 1
+        && data.ownerId.size() <= 128
+        && isValidId(data.ownerId)
+        && data.authorLabel is string
+        && data.authorLabel.size() >= 1
+        && data.authorLabel.size() <= 80
+        && data.title is string
+        && data.title.size() >= 1
+        && data.title.size() <= 120
+        && data.description is string
+        && data.description.size() <= 600
+        && data.verseIds is list
+        && data.verseIds.size() <= 200
+        && (data.verseIds.size() == 0 || (data.verseIds[0] is string && data.verseIds[0].size() <= 32))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Isolated PII profile document
+    match /users/{userId}/private/profile {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isVerifiedUser()
+        && isOwner(userId)
+        && isValidUserPrivateProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerifiedUser()
+        && isOwner(userId)
+        && isValidUserPrivateProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoURL', 'updatedAt']);
+      allow delete: if isValidId(userId) && isVerifiedUser() && isOwner(userId);
+    }
+
+    // Owner-only synchronized study workspace document
+    match /users/{userId}/studyState/main {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isVerifiedUser()
+        && isOwner(userId)
+        && isValidUserStudyDocument(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isVerifiedUser()
+        && isOwner(userId)
+        && isValidUserStudyDocument(incoming(), userId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'preferredTranslation',
+          'bookmarks',
+          'readChapters',
+          'recentSearches',
+          'highlights',
+          'notes',
+          'collections',
+          'savedGraphs',
+          'customEdges',
+          'updatedAt'
+        ]);
+      allow delete: if isValidId(userId) && isVerifiedUser() && isOwner(userId);
+    }
+
+    // Shared read-only study collections (direct get by shareId; list restricted to ownerId)
+    match /sharedCollections/{shareId} {
+      allow get: if isValidId(shareId);
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isValidId(shareId)
+        && isVerifiedUser()
+        && isValidSharedCollection(incoming(), shareId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(shareId)
+        && isVerifiedUser()
+        && existing().ownerId == request.auth.uid
+        && isValidSharedCollection(incoming(), shareId)
+        && incoming().ownerId == existing().ownerId
+        && incoming().shareId == existing().shareId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'authorLabel',
+          'title',
+          'description',
+          'verseIds',
+          'updatedAt'
+        ]);
+      allow delete: if isValidId(shareId) && isVerifiedUser() && existing().ownerId == request.auth.uid;
+    }
+  }
+}

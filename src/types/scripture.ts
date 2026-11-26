@@ -4,7 +4,7 @@ export type BibleTranslationId = 'KJV' | 'ASV' | 'YLT';
 
 export type AtlasTheme = 'dark' | 'light';
 
-export type GraphViewMode = 'ego' | 'canon_arc' | 'canon_ring';
+export type GraphViewMode = 'ego' | 'canon_arc' | 'canon_ring' | 'canon_matrix';
 
 export type NavSection =
   | 'graph'
@@ -13,7 +13,8 @@ export type NavSection =
   | 'timeline'
   | 'geography'
   | 'sanctuary'
-  | 'collections';
+  | 'collections'
+  | 'guide';
 
 export type RelationshipType =
   | 'direct_quotation'
@@ -294,8 +295,57 @@ export interface UserStudyState {
   collections: StudyCollection[];
   recentSearches: string[];
   savedGraphs: SavedGraphConfig[];
+  customEdges?: CrossReferenceEdge[];
   readChapters: string[];
   preferredTranslation?: BibleTranslationId;
+}
+
+export interface StrongsDictionaryEntry {
+  id: string;
+  lemma: string;
+  translit: string;
+  pron?: string;
+  derivation?: string;
+  def: string;
+  kjv: string;
+}
+
+export interface StrongsWordToken {
+  text: string;
+  strongsIds: string[];
+}
+
+export interface StrongsOccurrenceRecord {
+  c: number;
+  v: VerseId[];
+}
+
+export interface TskBookMatrix {
+  bookIds: string[];
+  counts: number[][];
+  weighted: number[][];
+  maxCrossBookCount: number;
+  otToNtCount: number;
+  totalDirectedSamples: number;
+}
+
+export interface SharedStudyCollection {
+  shareId: string;
+  ownerId: string;
+  authorLabel: string;
+  title: string;
+  description: string;
+  verseIds: VerseId[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface FirebaseUserSummary {
+  uid: string;
+  email: string | null;
+  emailVerified: boolean;
+  displayName: string | null;
+  photoURL: string | null;
 }
 
 export interface SearchResult {

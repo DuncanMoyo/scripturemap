@@ -3,9 +3,12 @@ import {
   BookOpen,
   Check,
   Clock,
+  Cloud,
+  Command,
   Compass,
   GitFork,
   Landmark,
+  LogIn,
   Menu,
   Plus,
   Search,
@@ -13,7 +16,7 @@ import {
   X,
 } from 'lucide-react';
 import { searchFullCorpus, searchScripture } from '../services/scriptureService';
-import { NavSection, SearchResult, VerseId } from '../types/scripture';
+import { FirebaseUserSummary, NavSection, SearchResult, VerseId } from '../types/scripture';
 import { OfflineIndicator } from './OfflineIndicator';
 
 interface TopBarProps {
@@ -28,6 +31,9 @@ interface TopBarProps {
   onRecordSearch: (term: string) => void;
   onCreateCollectionClick: () => void;
   onCopyShareLink?: () => void;
+  onOpenCommandPalette?: () => void;
+  authUser?: FirebaseUserSummary | null;
+  onAuthButtonClick?: () => void;
 }
 
 const SECTION_TITLES: Record<NavSection, string> = {
@@ -38,6 +44,7 @@ const SECTION_TITLES: Record<NavSection, string> = {
   geography: 'Biblical Geography',
   sanctuary: 'Sanctuary Explorer',
   collections: 'Study Collections',
+  guide: 'How to Use Scripture Atlas',
 };
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -52,6 +59,9 @@ export const TopBar: React.FC<TopBarProps> = ({
   onRecordSearch,
   onCreateCollectionClick,
   onCopyShareLink,
+  onOpenCommandPalette,
+  authUser = null,
+  onAuthButtonClick,
 }) => {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
@@ -127,11 +137,7 @@ export const TopBar: React.FC<TopBarProps> = ({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        inputRef.current?.focus();
-        setOpen(true);
-      } else if (
+      if (
         e.key === '/' &&
         document.activeElement?.tagName !== 'INPUT' &&
         document.activeElement?.tagName !== 'TEXTAREA'
@@ -422,9 +428,44 @@ export const TopBar: React.FC<TopBarProps> = ({
         )}
       </div>
 
-      {/* Zone 3: Offline indicator, Share Link & Primary Action */}
+      {/* Zone 3: Command Palette, Account, Offline indicator, Share Link & Primary Action */}
       <div className="flex items-center gap-2 shrink-0">
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            onClick={onOpenCommandPalette}
+            title="Open Command Palette (Cmd/Ctrl + K)"
+            className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-[var(--atlas-bg)] text-[var(--atlas-text-secondary)] hover:text-[var(--atlas-heading)] hover:bg-[var(--atlas-elevated)] border border-[var(--atlas-border)] transition-colors whitespace-nowrap shrink-0"
+          >
+            <Command className="w-3.5 h-3.5 text-[var(--atlas-accent)]" />
+            <span className="font-mono text-[11px] text-[var(--atlas-text-subtle)]">⌘K</span>
+          </button>
+        )}
+
         <OfflineIndicator />
+
+        {onAuthButtonClick && (
+          <button
+            type="button"
+            onClick={onAuthButtonClick}
+            title={authUser ? `Signed in as ${authUser.displayName ?? authUser.email}` : 'Sign in with Google for Cloud Sync'}
+            className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium bg-[var(--atlas-bg)] text-[var(--atlas-text-secondary)] hover:text-[var(--atlas-heading)] hover:bg-[var(--atlas-elevated)] border border-[var(--atlas-border)] transition-colors whitespace-nowrap shrink-0"
+          >
+            {authUser ? (
+              <>
+                <Cloud className="w-3.5 h-3.5 text-[var(--atlas-secondary)]" />
+                <span className="max-w-[96px] truncate">
+                  {authUser.displayName?.split(' ')[0] ?? 'Synced'}
+                </span>
+              </>
+            ) : (
+              <>
+                <LogIn className="w-3.5 h-3.5 text-[var(--atlas-text-muted)]" />
+                <span>Sign In</span>
+              </>
+            )}
+          </button>
+        )}
 
         {onCopyShareLink && (
           <button

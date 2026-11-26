@@ -5,6 +5,7 @@ import {
   ArrowRight,
   BookmarkCheck,
   Box,
+  Camera,
   ChevronDown,
   ChevronUp,
   CircleDot,
@@ -13,7 +14,9 @@ import {
   EyeOff,
   Filter,
   GitBranchPlus,
+  Grid3X3,
   LayoutGrid,
+  Link2,
   Maximize2,
   Minus,
   Network,
@@ -23,6 +26,7 @@ import {
   Route,
   Save,
   Search,
+  Trash2,
   X,
 } from 'lucide-react';
 import {
@@ -42,11 +46,13 @@ import {
   getVerseById,
   resolveVerseAsync,
   ScripturePathResult,
+  searchScripture,
   searchWithinNodes,
 } from '../services/scriptureService';
 import {
   AtlasTheme,
   CrossReferenceEdge,
+  EpistemicNature,
   GraphLayoutType,
   GraphViewMode,
   HighlightColor,
@@ -55,6 +61,7 @@ import {
   VerseId,
 } from '../types/scripture';
 import { CanonAtlas3D } from './CanonAtlas3D';
+import { CanonMatrix2D } from './CanonMatrix2D';
 import { ContextualScripturePanel } from './ContextualScripturePanel';
 
 interface ScriptureGraphViewProps {
@@ -74,6 +81,9 @@ interface ScriptureGraphViewProps {
   pathSourceId: VerseId | null;
   pathTargetId: VerseId | null;
   activePath: ScripturePathResult | null;
+  pathScope?: 'curated' | 'tsk';
+  pathLoading?: boolean;
+  onChangePathScope?: (scope: 'curated' | 'tsk') => void;
   onChangeDepth: (depth: number) => void;
   onSelectVerse: (verseId: VerseId) => void;
   onExpandVerse: (verseId: VerseId) => void;
@@ -103,6 +113,14 @@ interface ScriptureGraphViewProps {
   onToggleVerseInCollection: (collectionId: string, verseId: VerseId) => void;
   onCreateCollectionForVerse: (verseId: VerseId) => void;
   onSaveGraphView: () => void;
+  onAddCustomEdge?: (edge: CrossReferenceEdge) => void;
+  onDeleteCustomEdge?: (edgeId: string) => void;
+  onMapLexicalParallels?: (
+    strongsId: string,
+    lemma: string,
+    originVerseId: VerseId,
+    matchingVerses: VerseId[]
+  ) => void;
 }
 
 const ANCHOR_PRESETS: { id: VerseId; label: string }[] = [
@@ -351,6 +369,13 @@ function buildCytoscapeStylesheet(theme: AtlasTheme): cytoscape.StylesheetStyle[
       },
     },
     {
+      selector: 'edge[?isCustom]',
+      style: {
+        width: 2.5,
+        opacity: 0.92,
+      },
+    },
+    {
       selector: 'edge[epistemicNature = "explicit_biblical"]',
       style: {
         opacity: 0.86,
@@ -414,6 +439,9 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
   pathSourceId,
   pathTargetId,
   activePath,
+  pathScope = 'tsk',
+  pathLoading = false,
+  onChangePathScope,
   onChangeDepth,
   onSelectVerse,
   onExpandVerse,
@@ -443,22 +471,40 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
   onToggleVerseInCollection,
   onCreateCollectionForVerse,
   onSaveGraphView,
+  onAddCustomEdge,
+  onDeleteCustomEdge,
+  onMapLexicalParallels,
 }) => {
   const cyContainerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [pathPanelOpen, setPathPanelOpen] = useState(false);
+  const [customEdgeOpen, setCustomEdgeOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(true);
   const [panelOpen, setPanelOpen] = useState(true);
   const [selectedEdge, setSelectedEdge] = useState<CrossReferenceEdge | null>(null);
   const [saveToast, setSaveToast] = useState(false);
   const [resolvedVerseRevision, setResolvedVerseRevision] = useState(0);
 
+  // Path tracer inline search fields
+  const [pathSourceSearch, setPathSourceSearch] = useState('');
+  const [pathTargetSearch, setPathTargetSearch] = useState('');
+
+  // Custom edge composer state
+  const [customEdgeSourceId, setCustomEdgeSourceId] = useState<VerseId>(selectedVerseId);
+  const [customEdgeTargetId, setCustomEdgeTargetId] = useState<VerseId>('');
+  const [customEdgeTargetQuery, setCustomEdgeTargetQuery] = useState('');
+  const [customEdgeRel, setCustomEdgeRel] = useState<RelationshipType>('thematic');
+  const [customEdgeEpistemic, setCustomEdgeEpistemic] =
+    useState<EpistemicNature>('scholarly_interpretive');
+  const [customEdgeNote, setCustomEdgeNote] = useState('');
+
   // In-graph search state
   const [inGraphQuery, setInGraphQuery] = useState('');
   const [searchMatchIdx, setSearchMatchIdx] = useState(0);
 
   const cyPalette = useMemo(() => getCyPalette(atlasTheme), [atlasTheme]);
+  const customEdges = useMemo(() => studyState.customEdges ?? [], [studyState.customEdges]);
 
   // Stable refs for Cytoscape event handlers
   const onSelectVerseRef = useRef(onSelectVerse);
@@ -491,8 +537,8 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
   const activeRelSet = useMemo(() => new Set(activeRelationships), [activeRelationships]);
 
   const curatedEdges = useMemo(
-    () => getEdgesBetweenNodes(visibleSet, activeRelSet, epistemicFilter),
-    [visibleSet, activeRelSet, epistemicFilter]
+    () => getEdgesBetweenNodes(visibleSet, activeRelSet, epistemicFilter, customEdges),
+    [visibleSet, activeRelSet, epistemicFilter, customEdges]
   );
 
   const edges = useMemo(() => {
@@ -528,12 +574,12 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
       historical: 0,
       linguistic: 0,
     };
-    const allPossibleEdges = getEdgesBetweenNodes(visibleSet, undefined, epistemicFilter);
+    const allPossibleEdges = getEdgesBetweenNodes(visibleSet, undefined, epistemicFilter, customEdges);
     for (const edge of allPossibleEdges) {
       counts[edge.relationship] += 1;
     }
     return counts;
-  }, [visibleSet, epistemicFilter]);
+  }, [visibleSet, epistemicFilter, customEdges]);
 
   // In-graph search matches
   const inGraphMatches = useMemo(
@@ -546,6 +592,27 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
   }, [inGraphQuery, deduplicatedNodeIds.length]);
 
   const allIndexedVerses = useMemo(() => getAllIndexedVerses(), []);
+
+  const pathSourceMatches = useMemo(() => {
+    if (!pathSourceSearch.trim()) return [];
+    return searchScripture(pathSourceSearch)
+      .filter((r) => r.type === 'verse' && r.verseId)
+      .slice(0, 6);
+  }, [pathSourceSearch]);
+
+  const pathTargetMatches = useMemo(() => {
+    if (!pathTargetSearch.trim()) return [];
+    return searchScripture(pathTargetSearch)
+      .filter((r) => r.type === 'verse' && r.verseId)
+      .slice(0, 6);
+  }, [pathTargetSearch]);
+
+  const customEdgeTargetMatches = useMemo(() => {
+    if (!customEdgeTargetQuery.trim()) return [];
+    return searchScripture(customEdgeTargetQuery)
+      .filter((r) => r.type === 'verse' && r.verseId && r.verseId !== customEdgeSourceId)
+      .slice(0, 6);
+  }, [customEdgeTargetQuery, customEdgeSourceId]);
 
   // Initialize Cytoscape when in Ego 2D mode
   useEffect(() => {
@@ -690,7 +757,7 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
             x: containerCenter.x + Math.cos(newIdx * 0.9) * 140,
             y: containerCenter.y + Math.sin(newIdx * 0.9) * 140,
           };
-          const neighbors = getConnectedPassages(id, activeRelSet, epistemicFilter);
+          const neighbors = getConnectedPassages(id, activeRelSet, epistemicFilter, customEdges);
           for (const n of neighbors) {
             const mountedNeighbor = cy.getElementById(n.verse.id);
             if (mountedNeighbor.nonempty()) {
@@ -729,6 +796,7 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
         if (cy.getElementById(edge.id).empty()) {
           const meta = RELATIONSHIP_METADATA[edge.relationship];
           const isTsk = edge.id.startsWith('tsk-');
+          const isCustom = edge.id.startsWith('custom-');
           edgesToAdd.push({
             group: 'edges',
             data: {
@@ -741,12 +809,17 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
               confidence: edge.confidence,
               sourceAttribution: edge.sourceAttribution,
               supportingEvidence: edge.supportingEvidence,
-              relLabel: isTsk ? 'TSK Parallel' : meta.shortLabel,
+              relLabel: isTsk
+                ? 'TSK Parallel'
+                : isCustom
+                ? `Personal: ${meta.shortLabel}`
+                : meta.shortLabel,
               explanation: edge.explanation,
               color: isTsk ? (atlasTheme === 'light' ? '#6C6257' : '#8E887D') : meta.color,
               lineStyle: isTsk ? 'dashed' : meta.lineStyle,
-              edgeWidth: isTsk ? 1.5 : meta.width,
+              edgeWidth: isTsk ? 1.5 : isCustom ? 2.5 : meta.width,
               isTsk,
+              isCustom,
             },
           });
         }
@@ -823,6 +896,7 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
     epistemicFilter,
     resolvedVerseRevision,
     atlasTheme,
+    customEdges,
   ]);
 
   // Highlighting: selection, focus mode, path tracing, and in-graph search
@@ -939,9 +1013,50 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
     window.setTimeout(() => setSaveToast(false), 2000);
   };
 
+  const handleExportPng = () => {
+    const cy = cyRef.current;
+    if (!cy) return;
+    const dataUri = cy.png({
+      full: true,
+      scale: 2,
+      bg: atlasTheme === 'light' ? '#F8F6F3' : '#0D0E10',
+    });
+    const a = document.createElement('a');
+    a.href = dataUri;
+    a.download = `scripture-atlas-${anchorVerseId.toLowerCase()}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleSubmitCustomEdge = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!onAddCustomEdge || !customEdgeSourceId || !customEdgeTargetId) return;
+    const newEdge: CrossReferenceEdge = {
+      id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      source: customEdgeSourceId,
+      target: customEdgeTargetId,
+      relationship: customEdgeRel,
+      epistemicNature: customEdgeEpistemic,
+      editorialStatus: 'curated_sample',
+      confidence: 'moderate',
+      sourceAttribution: 'Personal Study Connection',
+      explanation:
+        customEdgeNote.trim() ||
+        `User-authored ${RELATIONSHIP_METADATA[customEdgeRel].shortLabel.toLowerCase()} connection linking ${formatReferenceFromId(
+          customEdgeSourceId
+        )} and ${formatReferenceFromId(customEdgeTargetId)}.`,
+    };
+    onAddCustomEdge(newEdge);
+    setCustomEdgeOpen(false);
+    setCustomEdgeTargetId('');
+    setCustomEdgeTargetQuery('');
+    setCustomEdgeNote('');
+  };
+
   const selectedVerse = getVerseById(selectedVerseId);
   const selectedExpandableCount = selectedVerse
-    ? getConnectedPassages(selectedVerse.id, activeRelSet, epistemicFilter).filter(
+    ? getConnectedPassages(selectedVerse.id, activeRelSet, epistemicFilter, customEdges).filter(
         (c) => !visibleSet.has(c.verse.id)
       ).length
     : 0;
@@ -983,8 +1098,8 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
 
         {graphViewMode !== 'ego' ? (
           <>
-            {/* Segmented Mode Bar at Top Left for 3D Modes */}
-            <div className="absolute top-3 left-3 z-30 pointer-events-auto inline-flex items-center p-0.5 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border-strong)] shadow-md">
+            {/* Segmented Mode Bar at Top Left for 3D & Matrix Modes */}
+            <div className="absolute top-3 left-3 z-30 pointer-events-auto inline-flex flex-wrap items-center p-0.5 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border-strong)] shadow-md">
               <button
                 type="button"
                 onClick={() => onChangeGraphViewMode('ego')}
@@ -1017,18 +1132,43 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                 <CircleDot className="w-3.5 h-3.5 text-[var(--atlas-secondary)]" />
                 <span>Canon Ring (3D)</span>
               </button>
+              <button
+                type="button"
+                onClick={() => onChangeGraphViewMode('canon_matrix')}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[11px] font-medium transition-colors whitespace-nowrap ${
+                  graphViewMode === 'canon_matrix'
+                    ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)]'
+                    : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+                }`}
+              >
+                <Grid3X3 className="w-3.5 h-3.5 text-[var(--atlas-accent)]" />
+                <span>Matrix (66×66)</span>
+              </button>
             </div>
 
-            <CanonAtlas3D
-              mode={graphViewMode}
-              atlasTheme={atlasTheme}
-              selectedVerseId={selectedVerseId}
-              onOpenBookInGraph={(vId) => {
-                onChangeGraphViewMode('ego');
-                onResetGraph(vId);
-              }}
-              onOpenBookInReader={onOpenInReader}
-            />
+            {graphViewMode === 'canon_matrix' ? (
+              <CanonMatrix2D
+                atlasTheme={atlasTheme}
+                onOpenBookInGraph={(vId) => {
+                  onChangeGraphViewMode('ego');
+                  onResetGraph(vId);
+                }}
+                onOpenBookInReader={(bookId, chapter, verseId) =>
+                  onOpenInReader(bookId, chapter, verseId ?? `${bookId}.${chapter}.1`)
+                }
+              />
+            ) : (
+              <CanonAtlas3D
+                mode={graphViewMode}
+                atlasTheme={atlasTheme}
+                selectedVerseId={selectedVerseId}
+                onOpenBookInGraph={(vId) => {
+                  onChangeGraphViewMode('ego');
+                  onResetGraph(vId);
+                }}
+                onOpenBookInReader={onOpenInReader}
+              />
+            )}
           </>
         ) : (
           <>
@@ -1053,7 +1193,7 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
             <div className="absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-20">
               {/* Left cluster */}
               <div className="flex flex-wrap items-center gap-1.5 pointer-events-auto">
-                {/* 2D / 3D Mode Switcher */}
+                {/* 2D / 3D / Matrix Mode Switcher */}
                 <div className="inline-flex items-center p-0.5 h-8 rounded-md bg-[var(--atlas-surface)]/95 border border-[var(--atlas-border-strong)]">
                   <button
                     type="button"
@@ -1080,6 +1220,15 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                   >
                     <CircleDot className="w-3 h-3" />
                     <span>Ring 3D</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onChangeGraphViewMode('canon_matrix')}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)] transition-colors whitespace-nowrap"
+                    title="Switch to 2D 66×66 Canonical Cross-Reference Matrix"
+                  >
+                    <Grid3X3 className="w-3 h-3" />
+                    <span>Matrix</span>
                   </button>
                 </div>
 
@@ -1279,6 +1428,7 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                     onClick={() => {
                       setPathPanelOpen((v) => !v);
                       setFilterOpen(false);
+                      setCustomEdgeOpen(false);
                     }}
                     className={`h-8 px-2.5 rounded-md border text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap ${
                       activePath
@@ -1287,11 +1437,11 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                     }`}
                   >
                     <Route className="w-3.5 h-3.5" />
-                    <span>Trace Path</span>
+                    <span>{pathLoading ? 'Tracing...' : 'Trace Path'}</span>
                   </button>
 
                   {pathPanelOpen && (
-                    <div className="absolute left-0 top-10 w-80 p-3.5 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border-strong)] shadow-2xl z-40 space-y-3">
+                    <div className="absolute left-0 top-10 w-80 sm:w-96 p-3.5 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border-strong)] shadow-2xl z-40 space-y-3">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-medium text-[var(--atlas-heading)]">
                           Shortest Canonical Path Tracer
@@ -1305,22 +1455,92 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                         </button>
                       </div>
 
+                      {onChangePathScope && (
+                        <div className="grid grid-cols-2 gap-1 p-0.5 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border)]">
+                          <button
+                            type="button"
+                            onClick={() => onChangePathScope('tsk')}
+                            className={`py-1 px-2 rounded text-[11px] font-medium transition-colors ${
+                              pathScope === 'tsk'
+                                ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-secondary-soft)]'
+                                : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+                            }`}
+                          >
+                            Full Bible TSK (66 Books)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onChangePathScope('curated')}
+                            className={`py-1 px-2 rounded text-[11px] font-medium transition-colors ${
+                              pathScope === 'curated'
+                                ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)]'
+                                : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+                            }`}
+                          >
+                            Curated Edges Only
+                          </button>
+                        </div>
+                      )}
+
                       <div className="space-y-2">
                         <div>
-                          <label className="block text-[11px] text-[var(--atlas-text-muted)] mb-1">
-                            Origin Passage (A)
-                          </label>
-                          <select
-                            value={effectivePathSource}
-                            onChange={(e) => onSetPathSource(e.target.value)}
-                            className="w-full h-8 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)]"
-                          >
-                            {allIndexedVerses.map((v) => (
-                              <option key={`src-${v.id}`} value={v.id}>
-                                {v.reference}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="flex items-center justify-between text-[11px] text-[var(--atlas-text-muted)] mb-1">
+                            <span>Origin Passage (A)</span>
+                            <span className="font-mono text-[var(--atlas-accent-soft)]">
+                              {formatReferenceFromId(effectivePathSource)}
+                            </span>
+                          </div>
+                          <input
+                            type="text"
+                            value={pathSourceSearch}
+                            onChange={(e) => setPathSourceSearch(e.target.value)}
+                            placeholder="Type any verse (e.g. Ruth 2:1, Gen 1:1)..."
+                            className="w-full h-8 px-2.5 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)] placeholder:text-[var(--atlas-text-subtle)] focus:outline-none focus:border-[var(--atlas-accent)]"
+                          />
+                          {pathSourceMatches.length > 0 ? (
+                            <div className="mt-1 max-h-32 overflow-y-auto rounded border border-[var(--atlas-border)] bg-[var(--atlas-bg)] divide-y divide-[var(--atlas-border)]">
+                              {pathSourceMatches.map((m) => (
+                                <button
+                                  key={`psrc-${m.id}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (m.verseId) {
+                                      onSetPathSource(m.verseId);
+                                      setPathSourceSearch('');
+                                    }
+                                  }}
+                                  className="w-full px-2.5 py-1.5 text-left text-xs hover:bg-[var(--atlas-elevated)] flex items-center justify-between gap-2"
+                                >
+                                  <span className="font-medium text-[var(--atlas-heading)]">
+                                    {m.title}
+                                  </span>
+                                  <span className="text-[11px] text-[var(--atlas-text-muted)] truncate">
+                                    {m.snippet}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <select
+                              aria-label="Select curated origin passage"
+                              value={allIndexedVerses.some((v) => v.id === effectivePathSource) ? effectivePathSource : ''}
+                              onChange={(e) => {
+                                if (e.target.value) onSetPathSource(e.target.value);
+                              }}
+                              className="mt-1 w-full h-7 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border)] text-[11px] text-[var(--atlas-text-muted)]"
+                            >
+                              {!allIndexedVerses.some((v) => v.id === effectivePathSource) && (
+                                <option value="">
+                                  Selected: {formatReferenceFromId(effectivePathSource)}
+                                </option>
+                              )}
+                              {allIndexedVerses.map((v) => (
+                                <option key={`src-${v.id}`} value={v.id}>
+                                  {v.reference}
+                                </option>
+                              ))}
+                            </select>
+                          )}
                         </div>
 
                         <div className="flex justify-center">
@@ -1341,21 +1561,61 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                         </div>
 
                         <div>
-                          <label className="block text-[11px] text-[var(--atlas-text-muted)] mb-1">
-                            Destination Passage (B)
-                          </label>
-                          <select
-                            value={effectivePathTarget}
-                            onChange={(e) => onSetPathTarget(e.target.value || null)}
-                            className="w-full h-8 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)]"
-                          >
-                            <option value="">Select destination passage...</option>
-                            {allIndexedVerses.map((v) => (
-                              <option key={`dst-${v.id}`} value={v.id}>
-                                {v.reference}
+                          <div className="flex items-center justify-between text-[11px] text-[var(--atlas-text-muted)] mb-1">
+                            <span>Destination Passage (B)</span>
+                            <span className="font-mono text-[var(--atlas-secondary-soft)]">
+                              {effectivePathTarget ? formatReferenceFromId(effectivePathTarget) : 'Unselected'}
+                            </span>
+                          </div>
+                          <input
+                            type="text"
+                            value={pathTargetSearch}
+                            onChange={(e) => setPathTargetSearch(e.target.value)}
+                            placeholder="Type any verse (e.g. Rev 21:1, Rom 8:34)..."
+                            className="w-full h-8 px-2.5 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)] placeholder:text-[var(--atlas-text-subtle)] focus:outline-none focus:border-[var(--atlas-accent)]"
+                          />
+                          {pathTargetMatches.length > 0 ? (
+                            <div className="mt-1 max-h-32 overflow-y-auto rounded border border-[var(--atlas-border)] bg-[var(--atlas-bg)] divide-y divide-[var(--atlas-border)]">
+                              {pathTargetMatches.map((m) => (
+                                <button
+                                  key={`pdst-${m.id}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (m.verseId) {
+                                      onSetPathTarget(m.verseId);
+                                      setPathTargetSearch('');
+                                    }
+                                  }}
+                                  className="w-full px-2.5 py-1.5 text-left text-xs hover:bg-[var(--atlas-elevated)] flex items-center justify-between gap-2"
+                                >
+                                  <span className="font-medium text-[var(--atlas-heading)]">
+                                    {m.title}
+                                  </span>
+                                  <span className="text-[11px] text-[var(--atlas-text-muted)] truncate">
+                                    {m.snippet}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <select
+                              aria-label="Select curated destination passage"
+                              value={allIndexedVerses.some((v) => v.id === effectivePathTarget) ? effectivePathTarget : ''}
+                              onChange={(e) => onSetPathTarget(e.target.value || null)}
+                              className="mt-1 w-full h-7 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border)] text-[11px] text-[var(--atlas-text-muted)]"
+                            >
+                              <option value="">
+                                {effectivePathTarget && !allIndexedVerses.some((v) => v.id === effectivePathTarget)
+                                  ? `Selected: ${formatReferenceFromId(effectivePathTarget)}`
+                                  : 'Or pick curated landmark verse...'}
                               </option>
-                            ))}
-                          </select>
+                              {allIndexedVerses.map((v) => (
+                                <option key={`dst-${v.id}`} value={v.id}>
+                                  {v.reference}
+                                </option>
+                              ))}
+                            </select>
+                          )}
                         </div>
                       </div>
 
@@ -1372,26 +1632,176 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                           </button>
                         ) : (
                           <span className="text-[11px] text-[var(--atlas-text-subtle)]">
-                            Discovers &amp; adds bridge nodes
+                            {pathScope === 'tsk'
+                              ? 'Traces weighted TSK bridges across 66 books'
+                              : 'Traces curated topological edges only'}
                           </span>
                         )}
                         <button
                           type="button"
-                          disabled={!effectivePathSource || !effectivePathTarget}
+                          disabled={!effectivePathSource || !effectivePathTarget || pathLoading}
                           onClick={() => {
                             if (effectivePathSource && effectivePathTarget) {
                               onTracePath(effectivePathSource, effectivePathTarget);
                               setPathPanelOpen(false);
                             }
                           }}
-                          className="px-3 py-1.5 rounded bg-[var(--atlas-secondary)] text-[var(--atlas-secondary-contrast)] text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
+                          className="px-3 py-1.5 rounded bg-[var(--atlas-secondary)] text-[var(--atlas-secondary-contrast)] text-xs font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
                         >
-                          Find Path
+                          {pathLoading ? 'Searching...' : 'Find Path'}
                         </button>
                       </div>
                     </div>
                   )}
                 </div>
+
+                {/* User-Authored Custom Edge Builder Trigger */}
+                {onAddCustomEdge && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomEdgeSourceId(selectedVerseId);
+                        setCustomEdgeOpen((v) => !v);
+                        setFilterOpen(false);
+                        setPathPanelOpen(false);
+                      }}
+                      title="Create a personal cross-reference edge"
+                      className="h-8 px-2.5 rounded-md border bg-[var(--atlas-surface)]/95 text-[var(--atlas-text-secondary)] border-[var(--atlas-border-strong)] hover:border-[var(--atlas-accent)]/60 hover:text-[var(--atlas-accent-soft)] text-xs font-medium inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span className="hidden xl:inline">Link Edge</span>
+                    </button>
+
+                    {customEdgeOpen && (
+                      <form
+                        onSubmit={handleSubmitCustomEdge}
+                        className="absolute left-0 top-10 w-80 p-3.5 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border-strong)] shadow-2xl z-40 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-medium text-[var(--atlas-heading)]">
+                            Author Custom Connection
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setCustomEdgeOpen(false)}
+                            className="text-[var(--atlas-text-subtle)] hover:text-[var(--atlas-text)]"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="text-[11px] text-[var(--atlas-text-muted)]">
+                          From:{' '}
+                          <span className="font-mono text-[var(--atlas-accent-soft)]">
+                            {formatReferenceFromId(customEdgeSourceId)}
+                          </span>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between text-[11px] text-[var(--atlas-text-muted)] mb-1">
+                            <span>Target Passage</span>
+                            {customEdgeTargetId && (
+                              <span className="font-mono text-[var(--atlas-secondary-soft)]">
+                                {formatReferenceFromId(customEdgeTargetId)}
+                              </span>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={customEdgeTargetQuery}
+                            onChange={(e) => setCustomEdgeTargetQuery(e.target.value)}
+                            placeholder="Search target verse (e.g. Heb 10:20)..."
+                            className="w-full h-8 px-2.5 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)] focus:outline-none focus:border-[var(--atlas-accent)]"
+                          />
+                          {customEdgeTargetMatches.length > 0 && (
+                            <div className="mt-1 max-h-28 overflow-y-auto rounded border border-[var(--atlas-border)] bg-[var(--atlas-bg)] divide-y divide-[var(--atlas-border)]">
+                              {customEdgeTargetMatches.map((m) => (
+                                <button
+                                  key={`ce-${m.id}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (m.verseId) {
+                                      setCustomEdgeTargetId(m.verseId);
+                                      setCustomEdgeTargetQuery(m.title);
+                                    }
+                                  }}
+                                  className="w-full px-2.5 py-1.5 text-left text-xs hover:bg-[var(--atlas-elevated)] flex items-center justify-between gap-2"
+                                >
+                                  <span className="font-medium text-[var(--atlas-heading)]">
+                                    {m.title}
+                                  </span>
+                                  <span className="text-[11px] text-[var(--atlas-text-muted)] truncate">
+                                    {m.snippet}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[11px] text-[var(--atlas-text-muted)] mb-1">
+                              Relationship
+                            </label>
+                            <select
+                              value={customEdgeRel}
+                              onChange={(e) => setCustomEdgeRel(e.target.value as RelationshipType)}
+                              className="w-full h-8 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)]"
+                            >
+                              {RELATIONSHIP_TYPES.map((rt) => (
+                                <option key={rt} value={rt}>
+                                  {RELATIONSHIP_METADATA[rt].shortLabel}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[11px] text-[var(--atlas-text-muted)] mb-1">
+                              Epistemic Basis
+                            </label>
+                            <select
+                              value={customEdgeEpistemic}
+                              onChange={(e) =>
+                                setCustomEdgeEpistemic(e.target.value as EpistemicNature)
+                              }
+                              className="w-full h-8 px-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)]"
+                            >
+                              <option value="scholarly_interpretive">Scholarly Note</option>
+                              <option value="explicit_biblical">Explicit Text</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <textarea
+                          rows={2}
+                          value={customEdgeNote}
+                          onChange={(e) => setCustomEdgeNote(e.target.value)}
+                          placeholder="Study note / reasoning for this connection..."
+                          className="w-full p-2 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)] focus:outline-none focus:border-[var(--atlas-accent)]"
+                        />
+
+                        <div className="flex justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setCustomEdgeOpen(false)}
+                            className="px-2.5 py-1 text-xs text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={!customEdgeTargetId}
+                            className="px-3 py-1 rounded bg-[var(--atlas-accent)] text-[var(--atlas-accent-contrast)] text-xs font-semibold disabled:opacity-40"
+                          >
+                            Create Edge
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                )}
 
                 {/* Search within currently expanded graph */}
                 <div className="inline-flex items-center h-8 rounded-md bg-[var(--atlas-surface)]/95 border border-[var(--atlas-border-strong)] px-2 gap-1.5">
@@ -1538,6 +1948,16 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span className="hidden md:inline">Reset</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleExportPng}
+                  title="Export active 2D graph canvas as PNG image"
+                  className="h-8 px-2.5 rounded-md bg-[var(--atlas-surface)]/95 border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text-secondary)] hover:text-[var(--atlas-accent-soft)] hover:bg-[var(--atlas-elevated)] inline-flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span className="hidden xl:inline">PNG</span>
                 </button>
 
                 <button
@@ -1716,17 +2136,35 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                     >
                       {selectedEdge.id.startsWith('tsk-')
                         ? 'TSK Community Parallel'
+                        : selectedEdge.id.startsWith('custom-')
+                        ? `Personal · ${RELATIONSHIP_METADATA[selectedEdge.relationship].label}`
                         : RELATIONSHIP_METADATA[selectedEdge.relationship].label}
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedEdge(null)}
-                    aria-label="Close edge detail"
-                    className="text-[var(--atlas-text-subtle)] hover:text-[var(--atlas-text)]"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {selectedEdge.id.startsWith('custom-') && onDeleteCustomEdge && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onDeleteCustomEdge(selectedEdge.id);
+                          setSelectedEdge(null);
+                        }}
+                        aria-label="Delete custom edge"
+                        title="Delete personal connection"
+                        className="text-[var(--atlas-text-subtle)] hover:text-[#E57399]"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setSelectedEdge(null)}
+                      aria-label="Close edge detail"
+                      className="text-[var(--atlas-text-subtle)] hover:text-[var(--atlas-text)]"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2 text-xs font-medium text-[var(--atlas-heading)]">
                   <button
@@ -1760,7 +2198,11 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
                       {EPISTEMIC_META[selectedEdge.epistemicNature].label}
                     </span>
                     {' · '}
-                    <span>{EDITORIAL_STATUS_META[selectedEdge.editorialStatus].label}</span>
+                    <span>
+                      {selectedEdge.id.startsWith('custom-')
+                        ? 'Personal Study Note'
+                        : EDITORIAL_STATUS_META[selectedEdge.editorialStatus].label}
+                    </span>
                     {' · '}
                     <span>{CONFIDENCE_META[selectedEdge.confidence].label}</span>
                   </div>
@@ -1817,6 +2259,14 @@ export const ScriptureGraphView: React.FC<ScriptureGraphViewProps> = ({
             onSaveNote={onSaveNote}
             onToggleVerseInCollection={onToggleVerseInCollection}
             onCreateCollectionForVerse={onCreateCollectionForVerse}
+            onOpenCreateCustomEdge={(srcId) => {
+              setCustomEdgeSourceId(srcId);
+              setCustomEdgeOpen(true);
+              setFilterOpen(false);
+              setPathPanelOpen(false);
+            }}
+            onDeleteCustomEdge={onDeleteCustomEdge}
+            onMapLexicalParallels={onMapLexicalParallels}
             onClosePanel={() => setPanelOpen(false)}
           />
         </aside>

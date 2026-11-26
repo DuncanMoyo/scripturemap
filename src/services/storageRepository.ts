@@ -2,6 +2,7 @@ import { STARTER_COLLECTIONS } from '../data/collections';
 import {
   AtlasTheme,
   BibleTranslationId,
+  CrossReferenceEdge,
   HighlightColor,
   SavedGraphConfig,
   StudyCollection,
@@ -58,12 +59,13 @@ export function createInitialStudyState(): UserStudyState {
     collections: STARTER_COLLECTIONS,
     recentSearches: ['John 3:16', 'Sanctuary', 'Isaiah 53:5', 'Genesis 1:1'],
     savedGraphs: [],
+    customEdges: [],
     readChapters: [],
     preferredTranslation: 'KJV',
   };
 }
 
-function normalizePartialState(parsed: Partial<UserStudyState>): UserStudyState {
+export function normalizePartialState(parsed: Partial<UserStudyState>): UserStudyState {
   const defaults = createInitialStudyState();
 
   const bookmarks = Array.isArray(parsed.bookmarks)
@@ -132,6 +134,18 @@ function normalizePartialState(parsed: Partial<UserStudyState>): UserStudyState 
       )
     : [];
 
+  const customEdges: CrossReferenceEdge[] = Array.isArray(parsed.customEdges)
+    ? parsed.customEdges.filter(
+        (e): e is CrossReferenceEdge =>
+          Boolean(e) &&
+          typeof e.id === 'string' &&
+          typeof e.source === 'string' &&
+          typeof e.target === 'string' &&
+          typeof e.relationship === 'string' &&
+          typeof e.explanation === 'string'
+      )
+    : [];
+
   const readChapters = Array.isArray(parsed.readChapters)
     ? Array.from(
         new Set(
@@ -154,6 +168,7 @@ function normalizePartialState(parsed: Partial<UserStudyState>): UserStudyState 
     collections,
     recentSearches,
     savedGraphs,
+    customEdges,
     readChapters,
     preferredTranslation,
   };
@@ -321,6 +336,16 @@ export function exportStudyStateAsMarkdown(
     lines.push('');
   }
 
+  if (state.customEdges && state.customEdges.length > 0) {
+    lines.push(`## Custom Study Connections (${state.customEdges.length})`, '');
+    for (const edge of state.customEdges) {
+      lines.push(
+        `- **${edge.source} → ${edge.target}** [${edge.relationship}]: ${edge.explanation}`
+      );
+    }
+    lines.push('');
+  }
+
   return lines.join('\n');
 }
 
@@ -345,6 +370,7 @@ export function parseAndValidateStudyImport(
       'notes' in candidate ||
       'collections' in candidate ||
       'savedGraphs' in candidate ||
+      'customEdges' in candidate ||
       'readChapters' in candidate;
 
     if (!hasRecognizedKeys) {
@@ -426,6 +452,14 @@ export function mergeStudyStates(
     new Set([...(current.readChapters ?? []), ...(incoming.readChapters ?? [])])
   );
 
+  const edgeMap = new Map<string, CrossReferenceEdge>();
+  for (const e of current.customEdges ?? []) {
+    edgeMap.set(e.id, e);
+  }
+  for (const e of incoming.customEdges ?? []) {
+    edgeMap.set(e.id, e);
+  }
+
   return {
     bookmarks,
     highlights,
@@ -433,6 +467,7 @@ export function mergeStudyStates(
     collections: Array.from(collectionMap.values()),
     recentSearches,
     savedGraphs: Array.from(graphMap.values()).slice(0, 12),
+    customEdges: Array.from(edgeMap.values()).slice(0, 250),
     readChapters,
     preferredTranslation: incoming.preferredTranslation ?? current.preferredTranslation ?? 'KJV',
   };
@@ -560,5 +595,26 @@ export function saveGraphConfigInState(
   return {
     ...state,
     savedGraphs: [saved, ...state.savedGraphs].slice(0, 12),
+  };
+}
+
+export function addCustomEdgeInState(
+  state: UserStudyState,
+  edge: CrossReferenceEdge
+): UserStudyState {
+  const existing = state.customEdges ?? [];
+  return {
+    ...state,
+    customEdges: [edge, ...existing.filter((e) => e.id !== edge.id)].slice(0, 250),
+  };
+}
+
+export function removeCustomEdgeInState(
+  state: UserStudyState,
+  edgeId: string
+): UserStudyState {
+  return {
+    ...state,
+    customEdges: (state.customEdges ?? []).filter((e) => e.id !== edgeId),
   };
 }

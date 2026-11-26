@@ -10,6 +10,7 @@ import {
   GitFork,
   History,
   Landmark,
+  Languages,
   Layers,
   PanelRightOpen,
   Search,
@@ -38,17 +39,21 @@ import {
   getVerseInTranslation,
   isBookLoaded,
   loadBookKjv,
+  loadBookStrongsVerses,
   loadBookTranslation,
   loadTskConnectionsForVerse,
+  parseStrongsTaggedText,
 } from '../services/scriptureService';
 import {
   BibleTranslationId,
   HighlightColor,
+  StrongsWordToken,
   Testament,
   TskCrossReference,
   UserStudyState,
   VerseId,
 } from '../types/scripture';
+import { StrongsWordInspector } from './StrongsWordInspector';
 
 interface BibleReaderViewProps {
   bookId: string;
@@ -70,6 +75,12 @@ interface BibleReaderViewProps {
   onSaveNote: (verseId: VerseId, note: string) => void;
   onToggleVerseInCollection: (collectionId: string, verseId: VerseId) => void;
   onCreateCollectionForVerse: (verseId: VerseId) => void;
+  onMapLexicalParallels?: (
+    strongsId: string,
+    lemma: string,
+    originVerseId: VerseId,
+    matchingVerses: VerseId[]
+  ) => void;
 }
 
 const TRANSLATION_LABELS: Record<BibleTranslationId, string> = {
@@ -105,6 +116,7 @@ export const BibleReaderView: React.FC<BibleReaderViewProps> = ({
   onSaveNote,
   onToggleVerseInCollection,
   onCreateCollectionForVerse,
+  onMapLexicalParallels,
 }) => {
   const [testamentFilter, setTestamentFilter] = useState<'ALL' | Testament>('ALL');
   const [bookSearch, setBookSearch] = useState('');
@@ -112,6 +124,13 @@ export const BibleReaderView: React.FC<BibleReaderViewProps> = ({
   const [epistemicFilter, setEpistemicFilter] = useState<EpistemicFilter>('all');
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [compareParallel, setCompareParallel] = useState(false);
+  const [interlinearEnabled, setInterlinearEnabled] = useState(false);
+  const [strongsBookMap, setStrongsBookMap] = useState<Map<string, string> | null>(null);
+  const [selectedStrongsToken, setSelectedStrongsToken] = useState<{
+    id: string;
+    word: string;
+    verseId: VerseId;
+  } | null>(null);
   const [loadingBookId, setLoadingBookId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [corpusVersion, setCorpusVersion] = useState(0);
@@ -157,6 +176,21 @@ export const BibleReaderView: React.FC<BibleReaderViewProps> = ({
       active = false;
     };
   }, [currentBook.id, translation, compareParallel]);
+
+  useEffect(() => {
+    if (!interlinearEnabled) return;
+    let active = true;
+    void loadBookStrongsVerses(currentBook.id)
+      .then((map) => {
+        if (active) setStrongsBookMap(map);
+      })
+      .catch(() => {
+        if (active) setStrongsBookMap(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentBook.id, interlinearEnabled]);
 
   const chapterVerses = useMemo(() => {
     const translated = getChapterVersesInTranslation(currentBook.id, chapter, translation);
@@ -386,6 +420,21 @@ export const BibleReaderView: React.FC<BibleReaderViewProps> = ({
               ))}
             </div>
 
+            {/* Strong's Interlinear Toggle */}
+            <button
+              type="button"
+              onClick={() => setInterlinearEnabled((v) => !v)}
+              title="Toggle clickable Hebrew/Greek Strong's Lexicon tags (KJV text)"
+              className={`inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors whitespace-nowrap ${
+                interlinearEnabled
+                  ? 'bg-[var(--atlas-accent)]/16 border-[var(--atlas-accent)]/45 text-[var(--atlas-accent-soft)]'
+                  : 'bg-[var(--atlas-bg)] border-[var(--atlas-border-strong)] text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+              }`}
+            >
+              <Languages className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Strong&apos;s</span>
+            </button>
+
             {/* Chapter Read Toggle */}
             <button
               type="button"
@@ -552,9 +601,40 @@ export const BibleReaderView: React.FC<BibleReaderViewProps> = ({
                           {verse.verse}
                         </span>
                         <div className="flex-1 min-w-0">
-                          <p className="font-scripture text-[18px] leading-[1.82] text-[var(--atlas-heading)]">
-                            {verse.text}
-                          </p>
+                          {interlinearEnabled && strongsBookMap?.has(verse.id) ? (
+                            <p className="font-scripture text-[18px] leading-[1.9] text-[var(--atlas-heading)]">
+                              {parseStrongsTaggedText(strongsBookMap.get(verse.id)!).map(
+                                (tok: StrongsWordToken, tIdx: number) =>
+                                  tok.strongsIds.length > 0 ? (
+                                    <React.Fragment key={`${verse.id}-tok-${tIdx}`}>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setSelectedStrongsToken({
+                                            id: tok.strongsIds[0],
+                                            word: tok.text,
+                                            verseId: verse.id,
+                                          });
+                                        }}
+                                        title={`${tok.strongsIds.join(', ')} — Click for Strong's lexicon`}
+                                        className="inline underline decoration-dotted decoration-[var(--atlas-accent)]/60 underline-offset-4 hover:bg-[var(--atlas-accent)]/15 hover:text-[var(--atlas-accent-soft)] rounded px-0.5 transition-colors"
+                                      >
+                                        {tok.text}
+                                      </button>{' '}
+                                    </React.Fragment>
+                                  ) : (
+                                    <React.Fragment key={`${verse.id}-tok-${tIdx}`}>
+                                      <span>{tok.text} </span>
+                                    </React.Fragment>
+                                  )
+                              )}
+                            </p>
+                          ) : (
+                            <p className="font-scripture text-[18px] leading-[1.82] text-[var(--atlas-heading)]">
+                              {verse.text}
+                            </p>
+                          )}
                           <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-[var(--atlas-text-subtle)]">
                             <div className="flex items-center gap-2">
                               {xrefCount > 0 && (
@@ -1043,6 +1123,17 @@ export const BibleReaderView: React.FC<BibleReaderViewProps> = ({
             </div>
           </div>
         </aside>
+      )}
+
+      {selectedStrongsToken && (
+        <StrongsWordInspector
+          strongsId={selectedStrongsToken.id}
+          clickedWord={selectedStrongsToken.word}
+          sourceVerseId={selectedStrongsToken.verseId}
+          onClose={() => setSelectedStrongsToken(null)}
+          onOpenInReader={(bId, chNum, vId) => onNavigateReader(bId, chNum, vId)}
+          onMapLexicalParallels={onMapLexicalParallels}
+        />
       )}
     </div>
   );

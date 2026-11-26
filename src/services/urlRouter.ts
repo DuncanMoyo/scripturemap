@@ -15,6 +15,7 @@ export interface ParsedAtlasRoute {
   locationId?: string;
   journeyId?: string;
   sanctuaryId?: string;
+  sharedId?: string;
 }
 
 export interface AtlasRouteSnapshot {
@@ -41,6 +42,7 @@ const VALID_SECTIONS = new Set<NavSection>([
   'geography',
   'sanctuary',
   'collections',
+  'guide',
 ]);
 
 const VALID_TRANSLATIONS = new Set<BibleTranslationId>(['KJV', 'ASV', 'YLT']);
@@ -69,6 +71,12 @@ export function parseUrlRoute(pathname: string, search: string): ParsedAtlasRout
   const trParam = params.get('tr')?.toUpperCase() as BibleTranslationId | undefined;
   if (trParam && VALID_TRANSLATIONS.has(trParam)) {
     out.translation = trParam;
+  }
+
+  const sharedParam = params.get('shared');
+  if (sharedParam && /^[a-zA-Z0-9_-]{4,64}$/.test(sharedParam.trim())) {
+    out.sharedId = sharedParam.trim();
+    out.section = 'collections';
   }
 
   const head = segments[0]?.toLowerCase();
@@ -105,7 +113,7 @@ export function parseUrlRoute(pathname: string, search: string): ParsedAtlasRout
     }
   } else if (head === 'sanctuary' && segments[1]) {
     out.sanctuaryId = decodeURIComponent(segments[1]);
-  } else {
+  } else if (head !== 'collections') {
     // Graph or root URL query params
     const anchor = parseVerseIdParam(params.get('anchor'));
     if (anchor) out.anchorVerseId = anchor;
@@ -114,6 +122,7 @@ export function parseUrlRoute(pathname: string, search: string): ParsedAtlasRout
     const viewParam = params.get('view');
     if (viewParam === 'canon-arc') out.graphViewMode = 'canon_arc';
     else if (viewParam === 'canon-ring') out.graphViewMode = 'canon_ring';
+    else if (viewParam === 'canon-matrix') out.graphViewMode = 'canon_matrix';
     else if (viewParam === 'ego') out.graphViewMode = 'ego';
   }
 
@@ -135,6 +144,8 @@ export function buildUrlFromState(snap: AtlasRouteSnapshot): string {
         params.set('view', 'canon-arc');
       } else if (snap.graphViewMode === 'canon_ring') {
         params.set('view', 'canon-ring');
+      } else if (snap.graphViewMode === 'canon_matrix') {
+        params.set('view', 'canon-matrix');
       }
       const q = params.toString();
       return q ? `/graph?${q}` : '/graph';
@@ -172,6 +183,8 @@ export function buildUrlFromState(snap: AtlasRouteSnapshot): string {
         : '/sanctuary';
     case 'collections':
       return '/collections';
+    case 'guide':
+      return '/guide';
   }
 }
 

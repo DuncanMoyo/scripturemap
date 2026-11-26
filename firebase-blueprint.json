@@ -1,0 +1,174 @@
+{
+  "entities": {
+    "UserPrivateProfile": {
+      "title": "UserPrivateProfile",
+      "description": "Private user identity and email profile isolated under the user's own subtree.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID matching the document owner."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254,
+          "description": "Verified user email address."
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "User display name."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Optional profile avatar URL."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of latest update."
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "UserStudyDocument": {
+      "title": "UserStudyDocument",
+      "description": "Cross-device synchronized study state including bookmarks, highlights, notes, collections, custom graph links, read chapters, and saved graphs.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner UID matching request.auth.uid."
+        },
+        "preferredTranslation": {
+          "type": "string",
+          "enum": ["KJV", "ASV", "YLT"],
+          "description": "Default Bible translation preference."
+        },
+        "bookmarks": {
+          "type": "array",
+          "description": "Bounded list of bookmarked canonical OSIS verse IDs (max 500)."
+        },
+        "readChapters": {
+          "type": "array",
+          "description": "Bounded list of completed chapters formatted as BOOK.CH (max 1189)."
+        },
+        "recentSearches": {
+          "type": "array",
+          "description": "Recent search strings (max 12)."
+        },
+        "highlights": {
+          "type": "object",
+          "description": "Map of OSIS verse ID to highlight color."
+        },
+        "notes": {
+          "type": "object",
+          "description": "Map of OSIS verse ID to personal study note."
+        },
+        "collections": {
+          "type": "array",
+          "description": "Array of user study collection objects (max 50)."
+        },
+        "savedGraphs": {
+          "type": "array",
+          "description": "Array of saved graph workspace configurations (max 24)."
+        },
+        "customEdges": {
+          "type": "array",
+          "description": "Array of user-authored custom cross-reference edges (max 250)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["ownerId", "preferredTranslation", "bookmarks", "readChapters", "collections", "createdAt", "updatedAt"]
+    },
+    "SharedStudyCollection": {
+      "title": "SharedStudyCollection",
+      "description": "Publicly readable snapshot of a user study collection accessible by direct share link ID.",
+      "type": "object",
+      "properties": {
+        "shareId": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Share slug identifier."
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Creator UID."
+        },
+        "authorLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Non-PII attribution label displayed on shared collection."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Collection title."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 600,
+          "description": "Collection summary description."
+        },
+        "verseIds": {
+          "type": "array",
+          "description": "Bounded list of canonical verse IDs in the shared collection (max 200)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["shareId", "ownerId", "authorLabel", "title", "description", "verseIds", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/private/profile": {
+      "schema": { "$ref": "#/entities/UserPrivateProfile" },
+      "description": "Isolated PII document storing the authenticated user's profile."
+    },
+    "/users/{userId}/studyState/main": {
+      "schema": { "$ref": "#/entities/UserStudyDocument" },
+      "description": "Synced personal study workspace document owned exclusively by userId."
+    },
+    "/sharedCollections/{shareId}": {
+      "schema": { "$ref": "#/entities/SharedStudyCollection" },
+      "description": "Read-only shared study collection retrievable by share link; listing restricted to ownerId."
+    }
+  }
+}

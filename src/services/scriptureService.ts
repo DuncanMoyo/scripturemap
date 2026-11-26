@@ -27,7 +27,11 @@ import {
   RelationshipType,
   SanctuaryArticle,
   SearchResult,
+  StrongsDictionaryEntry,
+  StrongsOccurrenceRecord,
+  StrongsWordToken,
   Theme,
+  TskBookMatrix,
   TskCrossReference,
   Verse,
   VerseId,
@@ -85,6 +89,20 @@ let canonHeadPromise: Promise<CanonHeadGraph> | null = null;
 type RawTskBookMap = Record<string, [string, number, 'out' | 'in'][]>;
 const TSK_BOOK_CACHE = new Map<string, RawTskBookMap>();
 const TSK_IN_FLIGHT = new Map<string, Promise<RawTskBookMap>>();
+
+// 66x66 Book Matrix cache
+let tskMatrixCache: TskBookMatrix | null = null;
+let tskMatrixPromise: Promise<TskBookMatrix> | null = null;
+
+// Strong's Lexicon & 66-book Interlinear caches
+let strongsHebrewCache: Record<string, StrongsDictionaryEntry> | null = null;
+let strongsHebrewPromise: Promise<Record<string, StrongsDictionaryEntry>> | null = null;
+let strongsGreekCache: Record<string, StrongsDictionaryEntry> | null = null;
+let strongsGreekPromise: Promise<Record<string, StrongsDictionaryEntry>> | null = null;
+let strongsOccurrencesCache: Record<string, StrongsOccurrenceRecord> | null = null;
+let strongsOccurrencesPromise: Promise<Record<string, StrongsOccurrenceRecord>> | null = null;
+const STRONGS_BOOK_CACHE = new Map<string, Map<string, string>>();
+const STRONGS_BOOK_IN_FLIGHT = new Map<string, Promise<Map<string, string>>>();
 
 // Common canonical abbreviations for smart reference parsing
 const BOOK_ALIASES: Record<string, string> = {
@@ -418,6 +436,163 @@ export async function loadTskConnectionsForVerse(verseId: VerseId): Promise<TskC
   }));
 }
 
+export async function loadTskBookMatrix(): Promise<TskBookMatrix> {
+  if (tskMatrixCache) return tskMatrixCache;
+  if (tskMatrixPromise) return tskMatrixPromise;
+  tskMatrixPromise = readPublicJson<TskBookMatrix>('tsk/book-matrix.json')
+    .then((data) => {
+      tskMatrixCache = data;
+      return data;
+    })
+    .finally(() => {
+      tskMatrixPromise = null;
+    });
+  return tskMatrixPromise;
+}
+
+// ---------- Strong's Interlinear & Lexicon Loaders ----------
+
+export async function loadStrongsDictionary(
+  lang: 'H' | 'G'
+): Promise<Record<string, StrongsDictionaryEntry>> {
+  if (lang === 'H') {
+    if (strongsHebrewCache) return strongsHebrewCache;
+    if (strongsHebrewPromise) return strongsHebrewPromise;
+    strongsHebrewPromise = readPublicJson<Record<string, StrongsDictionaryEntry>>(
+      'lexicon/strongs-hebrew.json'
+    )
+      .then((d) => {
+        strongsHebrewCache = d;
+        return d;
+      })
+      .finally(() => {
+        strongsHebrewPromise = null;
+      });
+    return strongsHebrewPromise;
+  }
+
+  if (strongsGreekCache) return strongsGreekCache;
+  if (strongsGreekPromise) return strongsGreekPromise;
+  strongsGreekPromise = readPublicJson<Record<string, StrongsDictionaryEntry>>(
+    'lexicon/strongs-greek.json'
+  )
+    .then((d) => {
+      strongsGreekCache = d;
+      return d;
+    })
+    .finally(() => {
+      strongsGreekPromise = null;
+    });
+  return strongsGreekPromise;
+}
+
+export async function loadStrongsOccurrences(): Promise<Record<string, StrongsOccurrenceRecord>> {
+  if (strongsOccurrencesCache) return strongsOccurrencesCache;
+  if (strongsOccurrencesPromise) return strongsOccurrencesPromise;
+  strongsOccurrencesPromise = readPublicJson<Record<string, StrongsOccurrenceRecord>>(
+    'lexicon/strongs-occurrences.json'
+  )
+    .then((d) => {
+      strongsOccurrencesCache = d;
+      return d;
+    })
+    .finally(() => {
+      strongsOccurrencesPromise = null;
+    });
+  return strongsOccurrencesPromise;
+}
+
+export async function getStrongsEntryAsync(
+  strongsId: string
+): Promise<StrongsDictionaryEntry | undefined> {
+  const clean = strongsId.trim().toUpperCase();
+  if (!clean.startsWith('H') && !clean.startsWith('G')) return undefined;
+  const dict = await loadStrongsDictionary(clean[0] as 'H' | 'G');
+  const raw = dict[clean];
+  if (!raw) return undefined;
+  return { ...raw, id: raw.id || clean };
+}
+
+export async function getStrongsOccurrencesAsync(
+  strongsId: string
+): Promise<StrongsOccurrenceRecord | undefined> {
+  const clean = strongsId.trim().toUpperCase();
+  const occ = await loadStrongsOccurrences();
+  return occ[clean];
+}
+
+export async function loadBookStrongsVerses(bookId: string): Promise<Map<string, string>> {
+  const cached = STRONGS_BOOK_CACHE.get(bookId);
+  if (cached) return cached;
+  const inFlight = STRONGS_BOOK_IN_FLIGHT.get(bookId);
+  if (inFlight) return inFlight;
+
+  const task = readPublicJson<RawBookPayload>(`strongs/${encodeURIComponent(bookId)}.json`)
+    .then((payload) => {
+      const verseTextMap = new Map<string, string>();
+      for (const [chStr, verses] of Object.entries(payload.chapters)) {
+        for (const rv of verses) {
+          verseTextMap.set(`${bookId}.${chStr}.${rv.v}`, rv.t);
+        }
+      }
+      STRONGS_BOOK_CACHE.set(bookId, verseTextMap);
+      return verseTextMap;
+    })
+    .finally(() => {
+      STRONGS_BOOK_IN_FLIGHT.delete(bookId);
+    });
+
+  STRONGS_BOOK_IN_FLIGHT.set(bookId, task);
+  return task;
+}
+
+export function parseStrongsTaggedText(raw: string): StrongsWordToken[] {
+  const cleaned = raw
+    .replace(/<\/?em>/gi, '')
+    .replace(/<\/?[^>]+>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return [];
+
+  const tokens: StrongsWordToken[] = [];
+  const rawParts = cleaned.split(' ');
+  const tagRegex = /\[([HG]\d+)\]/g;
+
+  for (const part of rawParts) {
+    if (!part) continue;
+    const strongsIds: string[] = [];
+    let match: RegExpExecArray | null;
+    tagRegex.lastIndex = 0;
+    while ((match = tagRegex.exec(part)) !== null) {
+      if (!strongsIds.includes(match[1])) {
+        strongsIds.push(match[1]);
+      }
+    }
+    const text = part.replace(tagRegex, '');
+    if (text) {
+      tokens.push({ text, strongsIds });
+    } else if (strongsIds.length > 0 && tokens.length > 0) {
+      for (const sid of strongsIds) {
+        if (!tokens[tokens.length - 1].strongsIds.includes(sid)) {
+          tokens[tokens.length - 1].strongsIds.push(sid);
+        }
+      }
+    }
+  }
+  return tokens;
+}
+
+export async function getVerseStrongsTokensAsync(
+  verseId: VerseId
+): Promise<StrongsWordToken[]> {
+  const bookId = verseId.split('.')[0];
+  if (!BOOK_MAP[bookId]) return [];
+  const map = await loadBookStrongsVerses(bookId);
+  const raw = map.get(verseId);
+  if (!raw) return [];
+  return parseStrongsTaggedText(raw);
+}
+
 // Pre-computed O(1) adjacency index for fast graph traversal, depth expansion, and path tracing
 const ADJACENCY_INDEX: Map<VerseId, ConnectedPassage[]> = (() => {
   const map = new Map<VerseId, ConnectedPassage[]>();
@@ -543,10 +718,23 @@ export function getVerseById(verseId: VerseId): Verse | undefined {
 export function getConnectedPassages(
   verseId: VerseId,
   allowedRelationships?: Set<RelationshipType>,
-  epistemicFilter: EpistemicFilter = 'all'
+  epistemicFilter: EpistemicFilter = 'all',
+  extraEdges: CrossReferenceEdge[] = []
 ): ConnectedPassage[] {
   const adjacent = ADJACENCY_INDEX.get(verseId) ?? [];
-  return adjacent.filter((item) => {
+  const combined: ConnectedPassage[] = [...adjacent];
+
+  for (const edge of extraEdges) {
+    if (edge.source === verseId) {
+      const target = getVerseById(edge.target);
+      if (target) combined.push({ edge, verse: target, role: 'outgoing' });
+    } else if (edge.target === verseId) {
+      const src = getVerseById(edge.source);
+      if (src) combined.push({ edge, verse: src, role: 'incoming' });
+    }
+  }
+
+  return combined.filter((item) => {
     if (allowedRelationships && !allowedRelationships.has(item.edge.relationship)) {
       return false;
     }
@@ -560,7 +748,8 @@ export function getConnectedPassages(
 export function getEdgesBetweenNodes(
   nodeIds: Set<VerseId>,
   allowedRelationships?: Set<RelationshipType>,
-  epistemicFilter: EpistemicFilter = 'all'
+  epistemicFilter: EpistemicFilter = 'all',
+  extraEdges: CrossReferenceEdge[] = []
 ): CrossReferenceEdge[] {
   const seen = new Set<string>();
   const results: CrossReferenceEdge[] = [];
@@ -577,6 +766,16 @@ export function getEdgesBetweenNodes(
         seen.add(edge.id);
         results.push(edge);
       }
+    }
+  }
+
+  for (const edge of extraEdges) {
+    if (seen.has(edge.id)) continue;
+    if (allowedRelationships && !allowedRelationships.has(edge.relationship)) continue;
+    if (epistemicFilter !== 'all' && edge.epistemicNature !== epistemicFilter) continue;
+    if (nodeIds.has(edge.source) && nodeIds.has(edge.target)) {
+      seen.add(edge.id);
+      results.push(edge);
     }
   }
 
@@ -649,7 +848,8 @@ export function findShortestScripturePath(
   sourceId: VerseId,
   targetId: VerseId,
   allowedRelationships?: Set<RelationshipType>,
-  epistemicFilter: EpistemicFilter = 'all'
+  epistemicFilter: EpistemicFilter = 'all',
+  extraEdges: CrossReferenceEdge[] = []
 ): ScripturePathResult | null {
   if (!getVerseById(sourceId) || !getVerseById(targetId)) return null;
   if (sourceId === targetId) {
@@ -663,7 +863,12 @@ export function findShortestScripturePath(
   let found = false;
   while (queue.length > 0 && !found) {
     const current = queue.shift()!;
-    const neighbors = getConnectedPassages(current, allowedRelationships, epistemicFilter);
+    const neighbors = getConnectedPassages(
+      current,
+      allowedRelationships,
+      epistemicFilter,
+      extraEdges
+    );
     for (const item of neighbors) {
       const nextId = item.verse.id;
       if (!visited.has(nextId)) {
@@ -698,6 +903,243 @@ export function findShortestScripturePath(
     cursor = link.prevId;
   }
   nodeIds.unshift(sourceId);
+
+  return { nodeIds, edges, steps };
+}
+
+function canonVerseIdxToOsis(verseIdx: number, canon: CanonIndex): VerseId | null {
+  let lo = 0;
+  let hi = canon.books.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const book = canon.books[mid];
+    if (verseIdx < book.firstVerseIdx) {
+      hi = mid - 1;
+    } else if (verseIdx >= book.firstVerseIdx + book.verseCount) {
+      lo = mid + 1;
+    } else {
+      let rem = verseIdx - book.firstVerseIdx;
+      for (let c = 0; c < book.chapterVerseCounts.length; c++) {
+        const count = book.chapterVerseCounts[c];
+        if (rem < count) {
+          return `${book.id}.${c + 1}.${rem + 1}`;
+        }
+        rem -= count;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Full-Bible shortest-path discovery combining curated scholarly edges, custom user edges,
+ * the 30,000-edge weighted TSK canon head graph, and per-book TSK neighborhood bridges
+ * for the origin and destination books.
+ */
+export async function findFullBiblePathAsync(
+  sourceId: VerseId,
+  targetId: VerseId,
+  options?: {
+    mode?: 'curated' | 'tsk';
+    allowedRelationships?: Set<RelationshipType>;
+    epistemicFilter?: EpistemicFilter;
+    customEdges?: CrossReferenceEdge[];
+  }
+): Promise<ScripturePathResult | null> {
+  const mode = options?.mode ?? 'tsk';
+  const customEdges = options?.customEdges ?? [];
+
+  const [srcVerse, dstVerse] = await Promise.all([
+    resolveVerseAsync(sourceId),
+    resolveVerseAsync(targetId),
+  ]);
+  if (!srcVerse || !dstVerse) return null;
+  if (sourceId === targetId) {
+    return { nodeIds: [sourceId], edges: [], steps: [] };
+  }
+
+  if (mode === 'curated') {
+    return findShortestScripturePath(
+      sourceId,
+      targetId,
+      options?.allowedRelationships,
+      options?.epistemicFilter ?? 'all',
+      customEdges
+    );
+  }
+
+  const srcBookId = sourceId.split('.')[0];
+  const dstBookId = targetId.split('.')[0];
+
+  const [canon, head, srcBookTsk, dstBookTsk] = await Promise.all([
+    loadCanonIndex(),
+    loadTskCanonHead(),
+    loadTskForBook(srcBookId).catch(() => ({} as RawTskBookMap)),
+    dstBookId === srcBookId
+      ? Promise.resolve({} as RawTskBookMap)
+      : loadTskForBook(dstBookId).catch(() => ({} as RawTskBookMap)),
+  ]);
+
+  const adj = new Map<
+    VerseId,
+    { nextId: VerseId; cost: number; edge: CrossReferenceEdge }[]
+  >();
+
+  const pushAdj = (from: VerseId, to: VerseId, cost: number, edge: CrossReferenceEdge) => {
+    let list = adj.get(from);
+    if (!list) {
+      list = [];
+      adj.set(from, list);
+    }
+    list.push({ nextId: to, cost, edge });
+  };
+
+  // 1. Tier-1 Curated & Custom User Edges (lowest cost = preferred canonical evidence)
+  const ep = options?.epistemicFilter ?? 'all';
+  const rels = options?.allowedRelationships;
+  for (const edge of [...CROSS_REFERENCES, ...customEdges]) {
+    if (rels && !rels.has(edge.relationship)) continue;
+    if (ep !== 'all' && edge.epistemicNature !== ep) continue;
+    const cost = edge.editorialStatus === 'verified_textual' ? 0.55 : 0.72;
+    pushAdj(edge.source, edge.target, cost, edge);
+    pushAdj(edge.target, edge.source, cost, edge);
+  }
+
+  // 2. Per-book TSK neighborhood edges for origin & destination books (bridges any verse into canon-head)
+  const makeTskBridge = (a: VerseId, b: VerseId, votes: number): CrossReferenceEdge => ({
+    id: `tsk-${a}--${b}`,
+    source: a,
+    target: b,
+    relationship: 'parallel',
+    epistemicNature: 'scholarly_interpretive',
+    editorialStatus: 'curated_sample',
+    confidence: votes >= 15 ? 'high' : 'moderate',
+    sourceAttribution: 'OpenBible.info / Treasury of Scripture Knowledge',
+    explanation: `TSK cross-reference bridge (${votes > 0 ? `+${votes}` : votes} net votes).`,
+  });
+
+  const addBookTskEdges = (bookMap: RawTskBookMap) => {
+    for (const [vId, entries] of Object.entries(bookMap)) {
+      for (let i = 0; i < Math.min(entries.length, 16); i++) {
+        const [tId, votes] = entries[i];
+        const cost = 1.0 + 1.0 / (1.0 + Math.max(0, votes) * 0.15);
+        const edge = makeTskBridge(vId, tId, votes);
+        pushAdj(vId, tId, cost, edge);
+        pushAdj(tId, vId, cost, edge);
+      }
+    }
+  };
+  addBookTskEdges(srcBookTsk);
+  if (dstBookId !== srcBookId) {
+    addBookTskEdges(dstBookTsk);
+  }
+
+  // 3. 30,000 high-vote TSK Canon Head edges across all 66 books
+  for (let i = 0; i < head.from.length; i++) {
+    const a = canonVerseIdxToOsis(head.from[i], canon);
+    const b = canonVerseIdxToOsis(head.to[i], canon);
+    if (!a || !b) continue;
+    const votes = head.votes[i] ?? 0;
+    const cost = 1.0 + 1.0 / (1.0 + Math.max(0, votes) * 0.15);
+    const edge = makeTskBridge(a, b, votes);
+    pushAdj(a, b, cost, edge);
+    pushAdj(b, a, cost, edge);
+  }
+
+  // Dijkstra (min-heap priority queue)
+  const dist = new Map<VerseId, number>([[sourceId, 0]]);
+  const parent = new Map<VerseId, { prevId: VerseId; edge: CrossReferenceEdge }>();
+  const heap: { id: VerseId; d: number }[] = [{ id: sourceId, d: 0 }];
+
+  const pushHeap = (item: { id: VerseId; d: number }) => {
+    heap.push(item);
+    let idx = heap.length - 1;
+    while (idx > 0) {
+      const pIdx = (idx - 1) >> 1;
+      if (heap[pIdx].d <= heap[idx].d) break;
+      const tmp = heap[pIdx];
+      heap[pIdx] = heap[idx];
+      heap[idx] = tmp;
+      idx = pIdx;
+    }
+  };
+
+  const popHeap = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length > 0 && last) {
+      heap[0] = last;
+      let idx = 0;
+      const len = heap.length;
+      while (true) {
+        let smallest = idx;
+        const l = idx * 2 + 1;
+        const r = idx * 2 + 2;
+        if (l < len && heap[l].d < heap[smallest].d) smallest = l;
+        if (r < len && heap[r].d < heap[smallest].d) smallest = r;
+        if (smallest === idx) break;
+        const tmp = heap[idx];
+        heap[idx] = heap[smallest];
+        heap[smallest] = tmp;
+        idx = smallest;
+      }
+    }
+    return top;
+  };
+
+  let found = false;
+  let expansions = 0;
+  const MAX_EXPANSIONS = 32000;
+
+  while (heap.length > 0 && expansions < MAX_EXPANSIONS) {
+    const cur = popHeap();
+    if (!cur) break;
+    if (cur.d > (dist.get(cur.id) ?? Infinity)) continue;
+    if (cur.id === targetId) {
+      found = true;
+      break;
+    }
+    expansions += 1;
+    const neighbors = adj.get(cur.id);
+    if (!neighbors) continue;
+    for (const n of neighbors) {
+      const nd = cur.d + n.cost;
+      if (nd < (dist.get(n.nextId) ?? Infinity)) {
+        dist.set(n.nextId, nd);
+        parent.set(n.nextId, { prevId: cur.id, edge: n.edge });
+        pushHeap({ id: n.nextId, d: nd });
+      }
+    }
+  }
+
+  if (!found) return null;
+
+  const nodeIds: VerseId[] = [];
+  const edges: CrossReferenceEdge[] = [];
+  let cursor: VerseId | undefined = targetId;
+  let guard = 0;
+  while (cursor && cursor !== sourceId && guard < 40) {
+    guard += 1;
+    nodeIds.unshift(cursor);
+    const link = parent.get(cursor);
+    if (!link) break;
+    edges.unshift(link.edge);
+    cursor = link.prevId;
+  }
+  nodeIds.unshift(sourceId);
+
+  // Hydrate all bridge verses along the discovered path
+  await Promise.all(nodeIds.map((id) => resolveVerseAsync(id).catch(() => undefined)));
+
+  const steps: ScripturePathResult['steps'] = [];
+  for (let i = 0; i < edges.length; i++) {
+    const fromVerse = getVerseById(nodeIds[i]);
+    const toVerse = getVerseById(nodeIds[i + 1]);
+    if (fromVerse && toVerse) {
+      steps.push({ from: fromVerse, to: toVerse, edge: edges[i] });
+    }
+  }
 
   return { nodeIds, edges, steps };
 }

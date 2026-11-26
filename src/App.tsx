@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TimelineView } from './components/AtlasModulesView';
 import { BibleReaderView } from './components/BibleReaderView';
 import { CollectionsView } from './components/CollectionsView';
+import { CommandPaletteModal } from './components/CommandPaletteModal';
 import { CreateCollectionModal } from './components/CreateCollectionModal';
 import { GeographyView } from './components/GeographyView';
+import { GuideView } from './components/GuideView';
 import { SanctuaryExplorerView } from './components/SanctuaryExplorerView';
 import { ScriptureGraphView } from './components/ScriptureGraphView';
 import { Sidebar } from './components/Sidebar';
@@ -11,21 +13,34 @@ import { ThemesView } from './components/ThemesView';
 import { TopBar } from './components/TopBar';
 import { RELATIONSHIP_TYPES } from './data/relationships';
 import {
+  fetchSharedCollection,
+  loadCloudStudyState,
+  saveCloudStudyState,
+  signInWithGoogle,
+  signOutFirebase,
+  subscribeAuthState,
+  subscribeCloudStudyState,
+} from './services/firebaseClient';
+import {
   buildGraphAtDepth,
   EpistemicFilter,
-  findShortestScripturePath,
+  findFullBiblePathAsync,
   formatReferenceFromId,
   getConnectedPassages,
   getEdgesBetweenNodes,
   getVerseById,
   loadTskConnectionsForVerse,
   resolveVerseAsync,
+  ScripturePathResult,
 } from './services/scriptureService';
 import {
   addCollectionToState,
+  addCustomEdgeInState,
   createInitialStudyState,
   loadStoredTheme,
   mergeStudyStates,
+  normalizePartialState,
+  removeCustomEdgeInState,
   saveGraphConfigInState,
   saveStoredTheme,
   setHighlightInState,
@@ -47,12 +62,14 @@ import {
   AtlasTheme,
   BibleTranslationId,
   CrossReferenceEdge,
+  FirebaseUserSummary,
   GraphLayoutType,
   GraphViewMode,
   HighlightColor,
   NavSection,
   RelationshipType,
   SavedGraphConfig,
+  SharedStudyCollection,
   UserStudyState,
   VerseId,
 } from './types/scripture';
@@ -123,6 +140,9 @@ export default function App() {
   const [pathTargetId, setPathTargetId] = useState<VerseId | null>(
     () => initialRoute.pathTargetId ?? null
   );
+  const [pathScope, setPathScope] = useState<'curated' | 'tsk'>('tsk');
+  const [pathLoading, setPathLoading] = useState(false);
+  const [activePath, setActivePath] = useState<ScripturePathResult | null>(null);
 
   // Bible Reader state
   const [readerBookId, setReaderBookId] = useState(() => initialRoute.readerBookId ?? 'JHN');
@@ -152,10 +172,38 @@ export default function App() {
   const [studyState, setStudyState] = useState<UserStudyState>(() =>
     createInitialStudyState()
   );
+  const studyStateRef = useRef(studyState);
+  studyStateRef.current = studyState;
 
-  // Create collection modal
+  // Create collection modal & Cmd/Ctrl+K Command Palette
   const [collectionModalOpen, setCollectionModalOpen] = useState(false);
   const [collectionModalVerseId, setCollectionModalVerseId] = useState<VerseId | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  // Firebase Auth, Cloud Sync & Shared Collection State
+  const [authUser, setAuthUser] = useState<FirebaseUserSummary | null>(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<
+    'offline' | 'syncing' | 'synced' | 'error'
+  >('offline');
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const [sharedIncoming, setSharedIncoming] = useState<SharedStudyCollection | null>(null);
+  const [sharedLoading, setSharedLoading] = useState<boolean>(
+    Boolean(initialRoute.sharedId)
+  );
+  const lastCloudSnapshotRef = useRef<string>('');
+  const cloudHydratedRef = useRef(false);
+
+  // Global Cmd/Ctrl + K command palette shortcut
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // Apply dual theme class & meta theme-color + persist
   useEffect(() => {
@@ -193,6 +241,129 @@ export default function App() {
       unsubscribe();
     };
   }, [initialRoute.translation]);
+
+  // Load incoming public shared collection if URL contains ?shared=<shareId>
+  useEffect(() => {
+    if (!initialRoute.sharedId) return;
+    let active = true;
+    setSharedLoading(true);
+    fetchSharedCollection(initialRoute.sharedId)
+      .then((shared) => {
+        if (!active) return;
+        setSharedIncoming(shared);
+        if (shared) {
+          setActiveSection('collections');
+        }
+      })
+      .catch(() => {
+        if (active) setSharedIncoming(null);
+      })
+      .finally(() => {
+        if (active) setSharedLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [initialRoute.sharedId]);
+
+  // Subscribe to Firebase Auth & hydrate/sync Cloud StudyState
+  useEffect(() => {
+    let unsubCloud: (() => void) | null = null;
+    const unsubAuth = subscribeAuthState((user) => {
+      setAuthUser(user);
+      if (unsubCloud) {
+        unsubCloud();
+        unsubCloud = null;
+      }
+      cloudHydratedRef.current = false;
+
+      if (!user) {
+        setCloudSyncStatus('offline');
+        setCloudSyncError(null);
+        return;
+      }
+
+      if (!user.emailVerified) {
+        setCloudSyncStatus('error');
+        setCloudSyncError('Verified Google email required for cloud sync.');
+        return;
+      }
+
+      setCloudSyncStatus('syncing');
+      setCloudSyncError(null);
+
+      void (async () => {
+        try {
+          const remotePartial = await loadCloudStudyState(user.uid);
+          let effectiveState = studyStateRef.current;
+          if (remotePartial) {
+            const normalizedRemote = normalizePartialState(remotePartial);
+            effectiveState = mergeStudyStates(studyStateRef.current, normalizedRemote, 'merge');
+          }
+          const jsonSnapshot = JSON.stringify(effectiveState);
+          lastCloudSnapshotRef.current = jsonSnapshot;
+          setStudyState(effectiveState);
+          await studyRepository.saveState(effectiveState);
+          await saveCloudStudyState(user.uid, effectiveState);
+          cloudHydratedRef.current = true;
+          setCloudSyncStatus('synced');
+
+          unsubCloud = subscribeCloudStudyState(
+            user.uid,
+            (incomingPartial) => {
+              const incomingNormalized = normalizePartialState(incomingPartial);
+              const merged = mergeStudyStates(
+                studyStateRef.current,
+                incomingNormalized,
+                'merge'
+              );
+              const nextJson = JSON.stringify(merged);
+              if (nextJson !== lastCloudSnapshotRef.current) {
+                lastCloudSnapshotRef.current = nextJson;
+                setStudyState(merged);
+                void studyRepository.saveState(merged);
+              }
+            },
+            (err) => {
+              setCloudSyncStatus('error');
+              setCloudSyncError(err instanceof Error ? err.message : 'Cloud sync error');
+            }
+          );
+        } catch (err) {
+          setCloudSyncStatus('error');
+          setCloudSyncError(err instanceof Error ? err.message : 'Cloud sync unavailable.');
+        }
+      })();
+    });
+
+    return () => {
+      unsubAuth();
+      if (unsubCloud) unsubCloud();
+    };
+  }, []);
+
+  // Debounced upload of local studyState changes when signed in
+  useEffect(() => {
+    if (!authUser || !authUser.emailVerified || !cloudHydratedRef.current) return;
+    const serialized = JSON.stringify(studyState);
+    if (serialized === lastCloudSnapshotRef.current) return;
+
+    setCloudSyncStatus('syncing');
+    const timer = window.setTimeout(() => {
+      lastCloudSnapshotRef.current = serialized;
+      saveCloudStudyState(authUser.uid, studyState)
+        .then(() => {
+          setCloudSyncStatus('synced');
+          setCloudSyncError(null);
+        })
+        .catch((err) => {
+          setCloudSyncStatus('error');
+          setCloudSyncError(err instanceof Error ? err.message : 'Cloud save failed');
+        });
+    }, 750);
+
+    return () => window.clearTimeout(timer);
+  }, [authUser, studyState]);
 
   // Hydrate initial non-anchor route verses if URL loaded directly onto a non-sample verse
   useEffect(() => {
@@ -302,15 +473,51 @@ export default function App() {
     }
   }, [routeSnapshot]);
 
-  const activePath = useMemo(() => {
-    if (!pathSourceId || !pathTargetId) return null;
-    return findShortestScripturePath(
-      pathSourceId,
-      pathTargetId,
-      new Set(activeRelationships),
-      epistemicFilter
-    );
-  }, [pathSourceId, pathTargetId, activeRelationships, epistemicFilter]);
+  // Recompute canonical path across Curated or Full 66-Book TSK network
+  useEffect(() => {
+    if (!pathSourceId || !pathTargetId) {
+      setActivePath(null);
+      setPathLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPathLoading(true);
+    void findFullBiblePathAsync(pathSourceId, pathTargetId, {
+      mode: pathScope,
+      allowedRelationships: new Set(activeRelationships),
+      epistemicFilter,
+      customEdges: studyState.customEdges ?? [],
+    })
+      .then(async (res) => {
+        if (cancelled) return;
+        setActivePath(res);
+        if (res && res.nodeIds.length > 0) {
+          await Promise.all(
+            res.nodeIds.map((nId) => resolveVerseAsync(nId).catch(() => undefined))
+          );
+          if (cancelled) return;
+          setVisibleNodeIds((prev) => Array.from(new Set([...prev, ...res.nodeIds])));
+          const bridgeEdges = res.edges.filter((e) => e.id.startsWith('tsk-'));
+          if (bridgeEdges.length > 0) {
+            setDynamicTskEdges((prev) => {
+              const seen = new Set(prev.map((e) => e.id));
+              return [...prev, ...bridgeEdges.filter((e) => !seen.has(e.id))];
+            });
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setActivePath(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPathLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [pathSourceId, pathTargetId, pathScope, activeRelationships, epistemicFilter, studyState.customEdges]);
 
   // Graph actions
   const handleSelectGraphVerse = useCallback((verseId: VerseId) => {
@@ -487,27 +694,16 @@ export default function App() {
     setActiveRelationships(rels);
   }, []);
 
-  const handleTracePath = useCallback(
-    (sourceId: VerseId, targetId: VerseId) => {
-      setPathSourceId(sourceId);
-      setPathTargetId(targetId);
-      const result = findShortestScripturePath(
-        sourceId,
-        targetId,
-        new Set(activeRelationships),
-        epistemicFilter
-      );
-      if (result && result.nodeIds.length > 0) {
-        setVisibleNodeIds((prev) => Array.from(new Set([...prev, ...result.nodeIds])));
-        setSelectedVerseId(targetId);
-      }
-    },
-    [activeRelationships, epistemicFilter]
-  );
+  const handleTracePath = useCallback((sourceId: VerseId, targetId: VerseId) => {
+    setPathSourceId(sourceId);
+    setPathTargetId(targetId);
+    setSelectedVerseId(targetId);
+  }, []);
 
   const handleClearPath = useCallback(() => {
     setPathSourceId(null);
     setPathTargetId(null);
+    setActivePath(null);
   }, []);
 
   const handleOpenInGraph = useCallback(
@@ -685,6 +881,86 @@ export default function App() {
     [updateStudyState]
   );
 
+  const handleAddCustomEdge = useCallback(
+    (edge: CrossReferenceEdge) => {
+      updateStudyState((prev) => addCustomEdgeInState(prev, edge));
+      void Promise.all([
+        resolveVerseAsync(edge.source).catch(() => undefined),
+        resolveVerseAsync(edge.target).catch(() => undefined),
+      ]).then(() => {
+        setVisibleNodeIds((prev) => Array.from(new Set([...prev, edge.source, edge.target])));
+      });
+    },
+    [updateStudyState]
+  );
+
+  const handleDeleteCustomEdge = useCallback(
+    (edgeId: string) => {
+      updateStudyState((prev) => removeCustomEdgeInState(prev, edgeId));
+    },
+    [updateStudyState]
+  );
+
+  const handleMapLexicalParallels = useCallback(
+    (strongsId: string, lemma: string, originVerseId: VerseId, matchingVerses: VerseId[]) => {
+      const targets = matchingVerses.filter((v) => v !== originVerseId).slice(0, 12);
+      const allVerses = Array.from(new Set([originVerseId, ...targets]));
+      const lexicalEdges: CrossReferenceEdge[] = targets.map((tId) => ({
+        id: `tsk-lex-${strongsId}-${originVerseId}--${tId}`,
+        source: originVerseId,
+        target: tId,
+        relationship: 'linguistic',
+        epistemicNature: 'explicit_biblical',
+        editorialStatus: 'verified_textual',
+        confidence: 'high',
+        sourceAttribution: `Strong's Concordance (${strongsId} · ${lemma})`,
+        explanation: `Shares Strong's entry ${strongsId} (${lemma}) between ${formatReferenceFromId(
+          originVerseId
+        )} and ${formatReferenceFromId(tId)}.`,
+      }));
+
+      setAnchorVerseId(originVerseId);
+      setSelectedVerseId(originVerseId);
+      setPathSourceId(null);
+      setPathTargetId(null);
+      setFocusMode(false);
+      setGraphViewMode('ego');
+      setActiveSection('graph');
+      setVisibleNodeIds(allVerses);
+      setDynamicTskEdges(lexicalEdges);
+
+      void Promise.all(allVerses.map((vId) => resolveVerseAsync(vId).catch(() => undefined)));
+    },
+    []
+  );
+
+  const handleSignInGoogle = useCallback(() => {
+    void signInWithGoogle().catch((err) => {
+      setCloudSyncStatus('error');
+      setCloudSyncError(err instanceof Error ? err.message : 'Google Sign-In failed.');
+    });
+  }, []);
+
+  const handleSignOut = useCallback(() => {
+    void signOutFirebase().catch(() => {});
+  }, []);
+
+  const handleImportSharedCollection = useCallback(
+    (shared: SharedStudyCollection) => {
+      updateStudyState(
+        (prev) =>
+          addCollectionToState(
+            prev,
+            shared.title,
+            shared.description || `Shared by ${shared.authorLabel}`,
+            shared.verseIds
+          ).state
+      );
+      setSharedIncoming(null);
+    },
+    [updateStudyState]
+  );
+
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-[var(--atlas-bg)] text-[var(--atlas-text)]">
       <Sidebar
@@ -723,6 +999,9 @@ export default function App() {
             setCollectionModalOpen(true);
           }}
           onCopyShareLink={handleCopyShareLink}
+          onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+          authUser={authUser}
+          onAuthButtonClick={() => setActiveSection('collections')}
         />
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -744,6 +1023,9 @@ export default function App() {
               pathSourceId={pathSourceId}
               pathTargetId={pathTargetId}
               activePath={activePath}
+              pathScope={pathScope}
+              pathLoading={pathLoading}
+              onChangePathScope={setPathScope}
               onChangeDepth={handleChangeDepth}
               onSelectVerse={handleSelectGraphVerse}
               onExpandVerse={handleExpandVerse}
@@ -776,6 +1058,9 @@ export default function App() {
                 setCollectionModalOpen(true);
               }}
               onSaveGraphView={handleSaveGraphView}
+              onAddCustomEdge={handleAddCustomEdge}
+              onDeleteCustomEdge={handleDeleteCustomEdge}
+              onMapLexicalParallels={handleMapLexicalParallels}
             />
           )}
 
@@ -803,6 +1088,7 @@ export default function App() {
                 setCollectionModalVerseId(vId);
                 setCollectionModalOpen(true);
               }}
+              onMapLexicalParallels={handleMapLexicalParallels}
             />
           )}
 
@@ -861,6 +1147,47 @@ export default function App() {
               onOpenInGraph={handleOpenInGraph}
               onOpenInReader={handleOpenInReader}
               onImportStudyState={handleImportStudyState}
+              authUser={authUser}
+              cloudSyncStatus={cloudSyncStatus}
+              cloudSyncError={cloudSyncError}
+              onSignInGoogle={handleSignInGoogle}
+              onSignOut={handleSignOut}
+              sharedIncoming={sharedIncoming}
+              sharedLoading={sharedLoading}
+              onImportSharedCollection={handleImportSharedCollection}
+              onDismissSharedCollection={() => setSharedIncoming(null)}
+              onDeleteCustomEdge={handleDeleteCustomEdge}
+            />
+          )}
+
+          {activeSection === 'guide' && (
+            <GuideView
+              onOpenInGraph={handleOpenInGraph}
+              onOpenGraphMode={(mode, targetAnchor) => {
+                if (targetAnchor) {
+                  setAnchorVerseId(targetAnchor);
+                  setSelectedVerseId(targetAnchor);
+                }
+                setGraphViewMode(mode);
+                setActiveSection('graph');
+              }}
+              onTracePath={(src, dst) => {
+                setAnchorVerseId(src);
+                setSelectedVerseId(dst);
+                setPathScope('tsk');
+                setGraphViewMode('ego');
+                setPathSourceId(src);
+                setPathTargetId(dst);
+                setActiveSection('graph');
+              }}
+              onOpenInReader={handleOpenInReader}
+              onOpenTheme={handleOpenTheme}
+              onOpenTimeline={handleOpenTimeline}
+              onOpenLocation={handleOpenLocation}
+              onOpenJourney={handleOpenJourney}
+              onOpenSanctuary={handleOpenSanctuary}
+              onOpenCollections={() => setActiveSection('collections')}
+              onOpenCommandPalette={() => setCommandPaletteOpen(true)}
             />
           )}
         </div>
@@ -871,6 +1198,22 @@ export default function App() {
         initialVerseId={collectionModalVerseId}
         onClose={() => setCollectionModalOpen(false)}
         onCreate={handleCreateCollection}
+      />
+
+      <CommandPaletteModal
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        atlasTheme={atlasTheme}
+        onToggleTheme={() => setAtlasTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+        translation={translation}
+        onChangeTranslation={handleChangeTranslation}
+        onSelectSection={setActiveSection}
+        onSelectGraphMode={setGraphViewMode}
+        onOpenInGraph={handleOpenInGraph}
+        onOpenInReader={handleOpenInReader}
+        onOpenTheme={handleOpenTheme}
+        onOpenLocation={handleOpenLocation}
+        onOpenSanctuary={handleOpenSanctuary}
       />
     </div>
   );

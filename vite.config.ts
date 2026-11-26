@@ -48,11 +48,11 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
-              urlPattern: /^\/(?:kjv|translations|tsk)\/.*\.json$|^\/canon-index\.json$/,
+              urlPattern: /^\/(?:kjv|translations|tsk|strongs|lexicon)\/.*\.json$|^\/canon-index\.json$/,
               handler: 'CacheFirst',
               options: {
                 cacheName: 'scripture-corpus-cache',

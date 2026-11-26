@@ -2,15 +2,30 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
   BookOpen,
+  Check,
+  Cloud,
+  CloudOff,
+  Copy,
   Download,
   FileText,
   GitFork,
+  Link2,
+  LogIn,
+  LogOut,
   Plus,
   Search,
+  Share2,
   Trash2,
   Upload,
 } from 'lucide-react';
+import { RELATIONSHIP_METADATA } from '../data/relationships';
 import {
+  deleteSharedCollection,
+  listMySharedCollections,
+  publishSharedCollection,
+} from '../services/firebaseClient';
+import {
+  formatReferenceFromId,
   getVerseById,
   loadBookKjv,
   searchScripture,
@@ -20,7 +35,13 @@ import {
   exportStudyStateAsMarkdown,
   parseAndValidateStudyImport,
 } from '../services/storageRepository';
-import { SavedGraphConfig, UserStudyState, VerseId } from '../types/scripture';
+import {
+  FirebaseUserSummary,
+  SavedGraphConfig,
+  SharedStudyCollection,
+  UserStudyState,
+  VerseId,
+} from '../types/scripture';
 
 interface CollectionsViewProps {
   studyState: UserStudyState;
@@ -32,6 +53,16 @@ interface CollectionsViewProps {
   onOpenInGraph: (verseId: VerseId) => void;
   onOpenInReader: (bookId: string, chapter: number, verseId: VerseId) => void;
   onImportStudyState: (incoming: UserStudyState, mode: 'merge' | 'replace') => void;
+  authUser?: FirebaseUserSummary | null;
+  cloudSyncStatus?: 'offline' | 'syncing' | 'synced' | 'error';
+  cloudSyncError?: string | null;
+  onSignInGoogle?: () => void;
+  onSignOut?: () => void;
+  sharedIncoming?: SharedStudyCollection | null;
+  sharedLoading?: boolean;
+  onImportSharedCollection?: (shared: SharedStudyCollection) => void;
+  onDismissSharedCollection?: () => void;
+  onDeleteCustomEdge?: (edgeId: string) => void;
 }
 
 function triggerDownload(filename: string, content: string, mimeType: string) {
@@ -56,8 +87,20 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
   onOpenInGraph,
   onOpenInReader,
   onImportStudyState,
+  authUser = null,
+  cloudSyncStatus = 'offline',
+  cloudSyncError = null,
+  onSignInGoogle,
+  onSignOut,
+  sharedIncoming = null,
+  sharedLoading = false,
+  onImportSharedCollection,
+  onDismissSharedCollection,
+  onDeleteCustomEdge,
 }) => {
-  const [tab, setTab] = useState<'collections' | 'bookmarks' | 'graphs'>('collections');
+  const [tab, setTab] = useState<'collections' | 'bookmarks' | 'graphs' | 'custom_edges'>(
+    'collections'
+  );
   const [selectedCollectionId, setSelectedCollectionId] = useState<string>(
     studyState.collections[0]?.id ?? ''
   );
@@ -66,6 +109,11 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [, setHydratedTick] = useState(0);
+
+  // Public shared collections authored by the signed-in user
+  const [myShares, setMyShares] = useState<SharedStudyCollection[]>([]);
+  const [publishingShare, setPublishingShare] = useState(false);
+  const [copiedShareId, setCopiedShareId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pendingImport, setPendingImport] = useState<UserStudyState | null>(null);
@@ -78,11 +126,31 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
     studyState.collections.find((c) => c.id === selectedCollectionId) ??
     studyState.collections[0];
 
+  const customEdges = studyState.customEdges ?? [];
+
+  useEffect(() => {
+    if (!authUser) {
+      setMyShares([]);
+      return;
+    }
+    let mounted = true;
+    listMySharedCollections(authUser.uid)
+      .then((list) => {
+        if (mounted) setMyShares(list);
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [authUser]);
+
   useEffect(() => {
     const neededBookIds = new Set<string>();
     const allIds = [
       ...studyState.bookmarks,
       ...(activeCollection?.verseIds ?? []),
+      ...(sharedIncoming?.verseIds ?? []),
+      ...customEdges.flatMap((e) => [e.source, e.target]),
     ];
     for (const vId of allIds) {
       if (!getVerseById(vId)) {
@@ -95,7 +163,55 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
     Promise.all(Array.from(neededBookIds).map((bId) => loadBookKjv(bId)))
       .then(() => setHydratedTick((t) => t + 1))
       .catch(() => {});
-  }, [studyState.bookmarks, activeCollection?.verseIds]);
+  }, [studyState.bookmarks, activeCollection?.verseIds, sharedIncoming?.verseIds, customEdges]);
+
+  const handlePublishShare = async () => {
+    if (!authUser || !activeCollection) return;
+    setPublishingShare(true);
+    try {
+      const created = await publishSharedCollection(authUser, activeCollection);
+      setMyShares((prev) => [created, ...prev]);
+      const shareUrl = `${window.location.origin}/?shared=${encodeURIComponent(created.shareId)}`;
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(shareUrl).catch(() => {});
+      }
+      setCopiedShareId(created.shareId);
+      window.setTimeout(() => setCopiedShareId(null), 3000);
+      setStatusMessage({
+        kind: 'success',
+        text: `Published "${created.title}" & copied share link to clipboard.`,
+      });
+    } catch (err) {
+      setStatusMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Unable to publish shared link.',
+      });
+    } finally {
+      setPublishingShare(false);
+    }
+  };
+
+  const handleCopyExistingShare = (shareId: string) => {
+    const shareUrl = `${window.location.origin}/?shared=${encodeURIComponent(shareId)}`;
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      void navigator.clipboard.writeText(shareUrl).catch(() => {});
+    }
+    setCopiedShareId(shareId);
+    window.setTimeout(() => setCopiedShareId(null), 2500);
+  };
+
+  const handleRevokeShare = async (shareId: string) => {
+    try {
+      await deleteSharedCollection(shareId);
+      setMyShares((prev) => prev.filter((s) => s.shareId !== shareId));
+      setStatusMessage({ kind: 'success', text: 'Revoked public share link.' });
+    } catch (err) {
+      setStatusMessage({
+        kind: 'error',
+        text: err instanceof Error ? err.message : 'Failed to revoke share link.',
+      });
+    }
+  };
 
   const verseCandidates = useMemo(() => {
     if (!verseSearch.trim()) return [];
@@ -147,9 +263,133 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden bg-[var(--atlas-bg)]">
+      {/* Cloud Sync & Account Bar */}
+      <div className="px-5 py-2.5 bg-[var(--atlas-bg)] border-b border-[var(--atlas-border)] flex flex-wrap items-center justify-between gap-3 shrink-0">
+        <div className="flex items-center gap-2.5 text-xs">
+          {authUser ? (
+            <>
+              {authUser.photoURL ? (
+                <img
+                  src={authUser.photoURL}
+                  alt={authUser.displayName ?? 'User'}
+                  className="w-6 h-6 rounded-full border border-[var(--atlas-border-strong)]"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <Cloud className="w-4 h-4 text-[var(--atlas-secondary)]" />
+              )}
+              <div className="flex flex-col">
+                <span className="font-medium text-[var(--atlas-heading)]">
+                  {authUser.displayName ?? authUser.email ?? 'Signed In'}
+                </span>
+                <span className="text-[11px] text-[var(--atlas-text-muted)]">
+                  {cloudSyncStatus === 'syncing'
+                    ? 'Syncing study library to cloud...'
+                    : cloudSyncStatus === 'synced'
+                    ? 'Cloud sync active'
+                    : cloudSyncStatus === 'error'
+                    ? cloudSyncError ?? 'Sync error'
+                    : 'Connected'}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div className="flex items-center gap-2 text-[var(--atlas-text-muted)]">
+              <CloudOff className="w-4 h-4 text-[var(--atlas-text-subtle)]" />
+              <span>Local browser storage active · Sign in to sync &amp; publish shared study links</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2">
+          {authUser && onSignOut ? (
+            <button
+              type="button"
+              onClick={onSignOut}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[var(--atlas-surface)] hover:bg-[var(--atlas-elevated)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text-secondary)]"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
+            </button>
+          ) : onSignInGoogle ? (
+            <button
+              type="button"
+              onClick={onSignInGoogle}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--atlas-secondary)] text-[var(--atlas-secondary-contrast)] text-xs font-semibold hover:opacity-90"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>Sign in with Google</span>
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Incoming Shared Collection Banner (?shared=<id>) */}
+      {(sharedLoading || sharedIncoming) && (
+        <div className="px-5 py-3 bg-[var(--atlas-elevated)] border-b border-[var(--atlas-accent)]/35 flex flex-wrap items-center justify-between gap-3 shrink-0">
+          {sharedLoading ? (
+            <span className="text-xs text-[var(--atlas-text-muted)]">
+              Loading shared Scripture collection...
+            </span>
+          ) : (
+            sharedIncoming && (
+              <>
+                <div className="space-y-0.5 min-w-0">
+                  <div className="text-[11px] uppercase tracking-wider text-[var(--atlas-accent-soft)]">
+                    Shared Study Collection · By {sharedIncoming.authorLabel} ·{' '}
+                    {sharedIncoming.verseIds.length} passages
+                  </div>
+                  <div className="text-sm font-semibold text-[var(--atlas-heading)] truncate">
+                    {sharedIncoming.title}
+                  </div>
+                  {sharedIncoming.description && (
+                    <p className="text-xs text-[var(--atlas-text-secondary)] line-clamp-1">
+                      {sharedIncoming.description}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {sharedIncoming.verseIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onLoadVersesInGraph(sharedIncoming.verseIds, sharedIncoming.verseIds[0])
+                      }
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--atlas-bg)] border border-[var(--atlas-border-strong)] text-xs text-[var(--atlas-text)] hover:text-[var(--atlas-accent-soft)]"
+                    >
+                      <GitFork className="w-3.5 h-3.5" />
+                      <span>Explore in Graph</span>
+                    </button>
+                  )}
+                  {onImportSharedCollection && (
+                    <button
+                      type="button"
+                      onClick={() => onImportSharedCollection(sharedIncoming)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[var(--atlas-accent)] text-[var(--atlas-accent-contrast)] text-xs font-semibold hover:bg-[var(--atlas-accent-hover)]"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Save Copy to My Collections</span>
+                    </button>
+                  )}
+                  {onDismissSharedCollection && (
+                    <button
+                      type="button"
+                      onClick={onDismissSharedCollection}
+                      className="px-2 py-1 text-xs text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]"
+                    >
+                      Dismiss
+                    </button>
+                  )}
+                </div>
+              </>
+            )
+          )}
+        </div>
+      )}
+
       {/* Sub-navigation & Portability Bar */}
       <div className="px-5 py-3 bg-[var(--atlas-surface)] border-b border-[var(--atlas-border)] flex flex-wrap items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-1 p-1 rounded-md bg-[var(--atlas-bg)] border border-[var(--atlas-border)]">
+        <div className="flex flex-wrap items-center gap-1 p-1 rounded-md bg-[var(--atlas-bg)] border border-[var(--atlas-border)]">
           <button
             type="button"
             onClick={() => setTab('collections')}
@@ -182,6 +422,17 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
             }`}
           >
             Saved Graphs ({studyState.savedGraphs.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('custom_edges')}
+            className={`px-3 py-1.5 rounded text-xs font-medium transition-colors whitespace-nowrap ${
+              tab === 'custom_edges'
+                ? 'bg-[var(--atlas-elevated)] text-[var(--atlas-accent-soft)]'
+                : 'text-[var(--atlas-text-muted)] hover:text-[var(--atlas-text)]'
+            }`}
+          >
+            Personal Edges ({customEdges.length})
           </button>
         </div>
 
@@ -400,22 +651,86 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
                     </p>
                   </div>
 
-                  {activeCollection.verseIds.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onLoadVersesInGraph(
-                          activeCollection.verseIds,
-                          activeCollection.verseIds[0]
-                        )
-                      }
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-[var(--atlas-accent)] text-[var(--atlas-accent-contrast)] text-xs font-semibold hover:bg-[var(--atlas-accent-hover)] transition-colors whitespace-nowrap shrink-0 self-start sm:self-auto"
-                    >
-                      <GitFork className="w-3.5 h-3.5" />
-                      <span>Explore Collection in Graph</span>
-                    </button>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-auto">
+                    {authUser && (
+                      <button
+                        type="button"
+                        disabled={publishingShare}
+                        onClick={() => void handlePublishShare()}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-[var(--atlas-surface)] hover:bg-[var(--atlas-elevated)] border border-[var(--atlas-border-strong)] text-xs font-medium text-[var(--atlas-text-secondary)] transition-colors whitespace-nowrap disabled:opacity-50"
+                      >
+                        <Share2 className="w-3.5 h-3.5 text-[var(--atlas-secondary)]" />
+                        <span>{publishingShare ? 'Publishing...' : 'Share Public Link'}</span>
+                      </button>
+                    )}
+
+                    {activeCollection.verseIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onLoadVersesInGraph(
+                            activeCollection.verseIds,
+                            activeCollection.verseIds[0]
+                          )
+                        }
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-md bg-[var(--atlas-accent)] text-[var(--atlas-accent-contrast)] text-xs font-semibold hover:bg-[var(--atlas-accent-hover)] transition-colors whitespace-nowrap"
+                      >
+                        <GitFork className="w-3.5 h-3.5" />
+                        <span>Explore Collection in Graph</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {authUser && myShares.length > 0 && (
+                  <div className="p-3 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border)] space-y-2">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-[var(--atlas-text-muted)]">
+                      Your Published Shared Links ({myShares.length})
+                    </div>
+                    <div className="space-y-1.5">
+                      {myShares.map((s) => (
+                        <div
+                          key={s.shareId}
+                          className="flex items-center justify-between gap-2 text-xs px-2.5 py-1.5 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border)]"
+                        >
+                          <div className="min-w-0 truncate">
+                            <span className="font-medium text-[var(--atlas-heading)]">{s.title}</span>
+                            <span className="ml-2 font-mono text-[11px] text-[var(--atlas-text-muted)]">
+                              ?shared={s.shareId}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyExistingShare(s.shareId)}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[var(--atlas-elevated)] text-[11px] text-[var(--atlas-text-secondary)] hover:text-[var(--atlas-accent-soft)]"
+                            >
+                              {copiedShareId === s.shareId ? (
+                                <>
+                                  <Check className="w-3 h-3 text-[var(--atlas-secondary)]" />
+                                  <span>Copied</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="w-3 h-3" />
+                                  <span>Copy</span>
+                                </>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleRevokeShare(s.shareId)}
+                              title="Revoke public share link"
+                              className="p-1 text-[var(--atlas-text-subtle)] hover:text-[#E57399]"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="p-3.5 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border)] space-y-2">
                   <div className="relative">
@@ -663,6 +978,76 @@ export const CollectionsView: React.FC<CollectionsViewProps> = ({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === 'custom_edges' && (
+        <div className="flex-1 overflow-y-auto px-5 sm:px-10 py-8">
+          <div className="max-w-3xl mx-auto space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="font-scripture text-2xl font-semibold text-[var(--atlas-heading)]">
+                Personal Cross-Reference Edges
+              </h2>
+              <span className="text-xs font-mono text-[var(--atlas-text-muted)]">
+                {customEdges.length} custom links
+              </span>
+            </div>
+            {customEdges.length === 0 ? (
+              <div className="p-6 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border)] text-sm text-[var(--atlas-text-muted)]">
+                No personal cross-reference edges authored yet. In the Bible Graph workspace, click{' '}
+                <span className="text-[var(--atlas-accent-soft)]">Link Edge</span> or{' '}
+                <span className="text-[var(--atlas-accent-soft)]">Link Custom Connection</span> in the
+                verse inspector to create your own links.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {customEdges.map((edge) => {
+                  const meta = RELATIONSHIP_METADATA[edge.relationship];
+                  return (
+                    <div
+                      key={edge.id}
+                      className="p-4 rounded-md bg-[var(--atlas-surface)] border border-[var(--atlas-border)] space-y-2"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Link2 className="w-3.5 h-3.5 shrink-0" style={{ color: meta.color }} />
+                          <span className="text-sm font-medium text-[var(--atlas-heading)] truncate">
+                            {formatReferenceFromId(edge.source)} → {formatReferenceFromId(edge.target)}
+                          </span>
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--atlas-bg)] border border-[var(--atlas-border)] text-[var(--atlas-text-muted)]">
+                            {meta.shortLabel}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onLoadVersesInGraph([edge.source, edge.target], edge.source)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs text-[var(--atlas-secondary)] hover:bg-[var(--atlas-secondary)]/12"
+                          >
+                            <GitFork className="w-3 h-3" />
+                            <span>View in Graph</span>
+                          </button>
+                          {onDeleteCustomEdge && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteCustomEdge(edge.id)}
+                              aria-label="Delete personal edge"
+                              className="p-1 text-[var(--atlas-text-subtle)] hover:text-[#E57399]"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-xs text-[var(--atlas-text-secondary)] leading-relaxed">
+                        {edge.explanation}
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
